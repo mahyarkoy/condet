@@ -11,38 +11,32 @@ tf_dtype = tf.float32
 np_dtype = 'float32'
 
 ### Operations
-def lrelu(x, leak=0.1, name="lrelu"):
-	with tf.variable_scope(name):
-		f1 = 0.5 * (1 + leak)
-		f2 = 0.5 * (1 - leak)
-		return f1 * x + f2 * abs(x)
+def lrelu(x, leak=0.2, name="lrelu"):
+	return tf.nn.leaky_relu(x, leak, name)
 
 def conv2d(input_, output_dim,
-		   k_h=5, k_w=5, d_h=1, d_w=1, stddev=0.02,
-		   scope="conv2d", reuse=False, padding='SAME'):
-	with tf.variable_scope(scope, reuse=reuse):
-		w = tf.get_variable('w', [k_h, k_w, input_.get_shape()[-1], output_dim],
-							initializer=tf.contrib.layers.xavier_initializer())
-		#w = tf.get_variable('w', [k_h, k_w, input_.get_shape()[-1], output_dim],
-		#                    initializer=tf.truncated_normal_initializer(stddev=stddev))
-		conv = tf.nn.conv2d(input_, w, strides=[1, d_h, d_w, 1], padding=padding)
-		biases = tf.get_variable('biases', [output_dim], initializer=tf.constant_initializer(0.0))
-		# conv = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape())
-		conv = tf.nn.bias_add(conv, biases)
+		   k_h=5, k_w=5, d_h=1, d_w=1, k_init=tf.contrib.layers.xavier_initializer(),
+		   scope="conv2d", reuse=False, 
+		   padding='same', use_bias=True, trainable=True):
+	
+	conv = tf.layers.conv2d(
+		input_, output_dim, [k_h, k_w], strides=[d_h, d_w], 
+		padding=padding, use_bias=use_bias, 
+		kernel_initializer=k_init, name=scope, reuse=reuse, trainable=trainable)
 
-		return conv
+	return conv
 
-def linear(input_, output_size, scope=None, stddev=0.02, bias_start=0.0, with_w=False):
-	shape = input_.get_shape().as_list()
-	with tf.variable_scope(scope or "Linear"):
-		matrix = tf.get_variable("Matrix", [shape[1], output_size], tf_dtype,
-								 tf.contrib.layers.xavier_initializer())
-		bias = tf.get_variable("bias", [output_size], tf_dtype,
-			initializer=tf.constant_initializer(bias_start))
-		if with_w:
-			return tf.matmul(input_, matrix) + bias, matrix, bias
-		else:
-			return tf.matmul(input_, matrix) + bias
+def conv2d_tr(input_, output_dim,
+		   k_h=5, k_w=5, d_h=1, d_w=1, k_init=tf.contrib.layers.xavier_initializer(),
+		   scope="conv2d_tr", reuse=False, 
+		   padding='same', use_bias=True, trainable=True):
+    
+    conv_tr = tf.layers.conv2d_transpose(
+            input_, output_dim, [k_h, k_w], strides=[d_h, d_w], 
+            padding=padding, use_bias=use_bias, 
+            kernel_initializer=k_init, name=scope, reuse=reuse, trainable=trainable)
+    
+    return conv_tr
 
 def dense_batch(x, h_size, scope, phase, reuse=False):
 	with tf.variable_scope(scope, reuse=reuse):
@@ -190,8 +184,10 @@ class Condet:
 			self.g_loss_mean = tf.reduce_mean(
 				tf.reduce_sum(self.g_att * self.g_loss, axis=[1,2,3]), axis=None)
 
-			### reconstruction loss mean **weighted**
-			self.g_att_us = tf.image.resize_nearest_neighbor(self.g_att, tf.shape(self.i_layer)[1:3])
+			### reconstruction loss mean **weighted** (upsampling with deconv: d_h=num_disc_convs*2 k_h=k_disc+(k-1)*num_disc_convs)
+			#self.g_att_us = tf.image.resize_nearest_neighbor(self.g_att, tf.shape(self.i_layer)[1:3])
+			k_init = tf.constant_initializer(1.0)
+			self.g_att_us = conv2d_tr(self.g_att, 1, k_h=29, k_w=29, d_h=8, d_w=8, scope='rec_deconv', k_init=k_init, trainable=False)
 			self.rec_loss_mean = tf.reduce_mean(tf.reduce_sum(
 					self.g_att_us * tf.square(self.i_layer - self.co_input), axis=[1,2,3]))
 
@@ -283,7 +279,7 @@ class Condet:
 		act = self.d_act
 		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('d_net'):
-			### encoding the 28*28*3 image with conv into 3*3*256
+			### encoding the 64*64*3 image with conv into 8*8*1
 			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
 			h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
 			h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
@@ -296,7 +292,8 @@ class Condet:
 		with tf.variable_scope('a_net'):
 			h1 = act(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse))
 			o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
-		return o	
+			o_soft = tf.reshape(tf.nn.softmax(tf.contrib.layers.flatten(o)), tf.shape(o))
+		return o_soft
 
 	def start_session(self):
 		self.saver = tf.train.Saver(tf.global_variables(), 

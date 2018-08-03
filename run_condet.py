@@ -66,7 +66,7 @@ def read_svhn_prep(path):
 	### read data
 	with open(path, 'rb') as fs:
 		bboxes, im_data, im_names = pk.load(fs)
-	return bboxes, im_data, im_names
+	return bboxes, im_data * 2. / 255. - 1., im_names
 
 '''
 Reads svhn center and resize 32*32 images
@@ -75,7 +75,7 @@ def read_svhn_32(path):
 	content_mat = sio.loadmat(path)
 	content_data = np.moveaxis(content_mat['X'], -1, 0)
 	content_labs = content_mat['y'].reshape((-1))
-	return content_data, content_labs
+	return content_data * 2. / 255. - 1., content_labs
 
 '''
 Reads mnist data from file and return (data, labels) for train, val, test respctively.
