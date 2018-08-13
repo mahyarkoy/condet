@@ -80,6 +80,7 @@ class Condet:
 		self.data_dim = [None, None, 3]
 		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 1.0
+		self.r_att_loss_weight = 1.0
 	
 		self.d_loss_type = 'was'
 		self.g_loss_type = 'was'
@@ -122,6 +123,8 @@ class Condet:
 			r_att_gt = tf.scatter_nd([inds[1:3]], updates, r_att_shape[1:3])
 			r_att_gt = tf.reshape(r_att_gt, [1, r_att_shape[1], r_att_shape[2], 1])
 			print '>>> r_att_gt shape: ', self.r_att_gt.get_shape().as_list()
+			### build real attention loss
+			self.r_att_loss = tf.reduce_mean(tf.reduce_sum(tf.square(r_att_gt - self.r_att), axis=[1,2,3]))
 
 			### real gen manifold interpolation
 			int_rand = tf.random_uniform(tf.shape(g_layer)[0], dtype=tf_dtype)
@@ -187,7 +190,8 @@ class Condet:
 			### reconstruction loss mean **weighted** (upsampling with deconv: d_h=num_disc_convs*2 k_h=k_disc+(k-1)*num_disc_convs)
 			#self.g_att_us = tf.image.resize_nearest_neighbor(self.g_att, tf.shape(self.i_layer)[1:3])
 			k_init = tf.constant_initializer(1.0)
-			self.g_att_us = conv2d_tr(self.g_att, 1, k_h=29, k_w=29, d_h=8, d_w=8, scope='rec_deconv', k_init=k_init, trainable=False)
+			self.g_att_us = conv2d_tr(self.g_att, 1, k_h=29, k_w=29, d_h=8, d_w=8, scope='rec_deconv_g', k_init=k_init, trainable=False)
+			self.r_att_us = conv2d_tr(self.r_att, 1, k_h=29, k_w=29, d_h=8, d_w=8, scope='rec_deconv_r', k_init=k_init, trainable=False)
 			self.rec_loss_mean = tf.reduce_mean(tf.reduce_sum(
 					self.g_att_us * tf.square(self.i_layer - self.co_input), axis=[1,2,3]))
 
@@ -195,7 +199,9 @@ class Condet:
 			#	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.data_dim)]), axis=1)
 
 			### g loss combination
-			self.g_loss_total = self.g_loss_mean + self.rec_loss_weight * self.rec_loss_mean
+			self.g_loss_total = self.g_loss_mean + \
+				self.rec_loss_weight * self.rec_loss_mean + \
+				self.r_att_loss_weight * self.r_att_loss
 
 			### collect params
 			self.g_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "g_net")
@@ -309,10 +315,10 @@ class Condet:
 	def write_sum(self, sum_str, counter):
 		self.writer.add_summary(sum_str, counter)
 
-	def step(self, co_data, im_data=None, gen_update=False, 
+	def step(self, im_data, co_data=None, gen_update=False, 
 		gen_only=False, stats_only=False, 
 		att_only_co=False, att_only_im=False):
-		batch_size = co_data.shape[0]		
+		batch_size = im_data.shape[0]		
 		im_data = im_data.astype(np_dtype) if im_data is not None else None
 		co_data = co_data.astype(np_dtype) if co_data is not None else None
 
@@ -324,18 +330,18 @@ class Condet:
 		### only forward attention on co_data
 		if att_only_co:
 			feed_dict = {self.co_input: co_data, self.train_phase: False}
-			res_list = self.sess.run(self.g_att, feed_dict=feed_dict)
+			res_list = self.sess.run(self.g_att_us, feed_dict=feed_dict)
 			return res_list
 
 		### only forward attention on im_data
 		if att_only_im:
 			feed_dict = {self.im_input: im_data, self.train_phase: False}
-			res_list = self.sess.run(self.r_att, feed_dict=feed_dict)
+			res_list = self.sess.run(self.r_att_us, feed_dict=feed_dict)
 			return res_list
 
-		### only forward generator on z
+		### only forward generator on co_data
 		if gen_only:
-			feed_dict = {self.co_input: co_data, self.train_phase: False}
+			feed_dict = {self.im_input: im_data, self.train_phase: False}
 			g_layer = self.sess.run(self.g_layer, feed_dict=feed_dict)
 			return g_layer
 

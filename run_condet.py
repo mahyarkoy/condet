@@ -61,6 +61,7 @@ os.system('mkdir -p '+log_path_sum)
 
 '''
 Reads svhn_prep data from file and return (bboxes, data).
+bboxes: a list where each item is a matrix corresponding to one images with (l, t, r, b) as rows
 '''
 def read_svhn_prep(path):
 	### read data
@@ -384,6 +385,23 @@ def block_draw(im_data, path, separate_channels=False, border=False):
 		fig.subplots_adjust(wspace=0, hspace=0)
 		fig.savefig(path, dpi=300)
 
+'''
+Draws a row of images with bboxes top, corresponding attentions bottom.
+ims: image tensor
+bboxes: bbox matrix, row wise (l, t, r, b)
+atts: attention tensor, same shape as ims
+'''
+def draw_im_att(ims, bboxes, atts):
+	return
+
+'''
+Draws bboxes on top of images.
+ims: image tensor
+bboxes: bbox matrix, row wise (l, t, r, b)
+'''
+def draw_bbox(ims, bboxes):
+	return
+
 def shuffle_data(im_data, im_bboxes=None):
 	order = np.arange(im_data.shape[0])
 	np.random.shuffle(order)
@@ -395,7 +413,10 @@ def shuffle_data(im_data, im_bboxes=None):
 		return im_data_sh, im_bboxes_sh
 
 '''
-Train Ganist
+Train Condet:
+co_data: content images
+im_data: input images
+im_bboxes: bounding boxes for each input image (list where each element row wise matrix of bbox coordinates)
 '''
 def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 	### dataset definition
@@ -435,19 +456,27 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 		### shuffle dataset
 		train_im, train_bboxes = shuffle_data(im_data, im_bbox)
 		train_co = shuffle_data(co_data)
-		train_size = min(train_im.shape[0], train_co.shape[0])
+		train_size = train_im.shape[0]
+		co_size = train_co.shape[0]
 
 		epoch += 1
 		print ">>> Epoch %d started..." % epoch
 
-		### train one epoch
+		### train one epoch: input images size
+		co_batch_start = 0
 		for batch_start in range(0, train_size, batch_size):
 			pbar.update(itr_total)
+			### choose content batches for each input batches
 			batch_end = batch_start + batch_size
-			### fetch batch data
-			batch_co = train_co[batch_start:batch_end, ...]
+			co_batch_end = co_batch_start + batch_size
+			if co_batch_end > co_size:
+				co_batch_start = 0
+				batch_end = batch_size
+
+			### fetch batch data from content and input images
+			batch_co = train_co[co_batch_start:co_batch_end, ...]
 			batch_im = train_im[batch_start:batch_end, ...]
-			fetch_batch = False
+			co_batch_start += batch_size
 		
 			### evaluate energy distance between real and gen distributions
 			if itr_total % eval_step == 0:
@@ -464,35 +493,9 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 				norms_logs.append([np.max(grad_norms), np.mean(grad_norms), np.std(grad_norms)])
 				itrs_logs.append(itr_total)
 
-				### log rl vals and pvals **g_num**
-				rl_vals_logs.append(list(ganist.g_rl_vals))
-				rl_pvals_logs.append(list(ganist.g_rl_pvals))
-				#z_pr = np.exp(ganist.pg_temp * ganist.g_rl_pvals)
-				#z_pr = z_pr / np.sum(z_pr)
-				#rl_pvals_logs.append(list(z_pr))
-
-				### en_accuracy plots **g_num**
-				acc_array = np.zeros(ganist.g_num)
-				sample_size = 1000
-				for g in range(ganist.g_num):
-					z = g * np.ones(sample_size)
-					z = z.astype(np.int32)
-					g_samples = sample_ganist(ganist, sample_size, z_data=z)
-					acc_array[g] = eval_en_acc(ganist, g_samples, z)
-				en_acc_logs.append(list(acc_array))
-
-				### draw real samples en classified **g_num**
-				d_sample_size = 1000
-				#im_true_color = im_color_borders(train_dataset[:d_sample_size], 
-				#	train_labs[:d_sample_size], max_label=9)
-				#im_block_draw(im_true_color, 10, draw_path+'_t.png', 
-				#	im_labels=train_labs[:d_sample_size])
-				im_block_draw(train_dataset[:d_sample_size], 10, draw_path+'_t.png', 
-					im_labels=train_labs[:d_sample_size], ganist=ganist)
-
 			### discriminator update
 			if d_update_flag is True:
-				batch_sum, batch_g_data = condet.step(batch_co, batch_im, gen_update=False)
+				batch_sum, batch_g_data = condet.step(batch_im, batch_co, gen_update=False)
 				condet.write_sum(batch_sum, itr_total)
 				d_itr += 1
 				itr_total += 1
@@ -500,7 +503,7 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 
 			### generator updates: g_updates times for each d_updates of discriminator
 			elif g_updates > 0:
-				batch_sum, batch_g_data = condet.step(batch_co, gen_update=True)
+				batch_sum, batch_g_data = condet.step(batch_im, batch_co, gen_update=True)
 				condet.write_sum(batch_sum, itr_total)
 				g_itr += 1
 				itr_total += 1
@@ -656,12 +659,16 @@ if __name__ == '__main__':
 	svhn_train_path = '/media/evl/Public/Mahyar/Data/svhn/train/svhn_ndarray.cpk'
 	train_bbox, train_im, train_names = read_svhn_prep(svhn_train_path)
 	test_bbox, test_im, test_names = read_svhn_prep(svhn_test_path)
+	print '>>> INPUT TRAIN SIZE:', train_im.shape
+	print '>>> INPUT TEST SIZE:', test_im.shape
 
 	### svhn_cut (as content images)
 	svhn_32_train = '/media/evl/Public/Mahyar/Data/svhn/train_32x32.mat'
 	svhn_32_test = '/media/evl/Public/Mahyar/Data/svhn/test_32x32.mat'
 	train_co, train_co_labs = read_svhn_32(svhn_32_train)
 	test_co, test_co_labs = read_svhn_32(svhn_32_test)
+	print '>>> CONTENT TRAIN SIZE:', train_co.shape
+	print '>>> CONTENT TEST SIZE:', test_co.shape
 	
 	'''
 	TENSORFLOW SETUP
