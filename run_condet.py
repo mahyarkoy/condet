@@ -396,7 +396,7 @@ def draw_im_att(ims, bboxes, path, trans=None, recs=None, atts=None):
 	### each column is one image info
 	if trans is not None:
 		atts_tile = np.tile(atts, [1, 1, 1, 3])
-		im_mat = np.stack([ims_bb, recs, atts_tile * 2. - 1., trans, atts_tile*trans], axis=1)
+		im_mat = np.stack([ims_bb, recs, atts_tile * 2. - 1., trans, atts_tile*trans-(1.-atts_tile)], axis=1)
 	else:
 		im_mat = np.stack([ims_bb], axis=1)
 	block_draw(im_mat, path, border=True)
@@ -428,7 +428,7 @@ def shuffle_data(im_data, im_bboxes=None):
 	if im_bboxes is None:
 		return im_data_sh
 	else:
-		im_bboxes_sh = im_bboxes[order, ...]
+		im_bboxes_sh = [im_bboxes[i] for i in order]
 		return im_data_sh, im_bboxes_sh
 
 '''
@@ -437,12 +437,12 @@ co_data: content images
 im_data: input images
 im_bboxes: bounding boxes for each input image (list where each element row wise matrix of bbox coordinates)
 '''
-def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
+def train_condet(condet, co_data, im_data, im_bbox, labels=None):
 	### dataset definition
 	train_size = im_data.shape[0]
 
 	### training configs
-	max_itr_total = 3e3
+	max_itr_total = 5e5
 	d_updates = 5
 	g_updates = 1
 	batch_size = 32
@@ -481,17 +481,18 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 		co_batch_start = 0
 		for batch_start in range(0, train_size, batch_size):
 			pbar.update(itr_total)
-			### choose content batches for each input batches
+			### fetch batch data from input images
 			batch_end = batch_start + batch_size
-			co_batch_end = co_batch_start + batch_size
+			batch_im = train_im[batch_start:batch_end, ...]
+			batch_len = batch_im.shape[0]
+
+			### choose content batch for each input batch
+			co_batch_end = co_batch_start + batch_len
 			if co_batch_end > co_size:
 				co_batch_start = 0
-				batch_end = batch_size
-
-			### fetch batch data from content and input images
+				batch_end = batch_len
 			batch_co = train_co[co_batch_start:co_batch_end, ...]
-			batch_im = train_im[batch_start:batch_end, ...]
-			co_batch_start += batch_size
+			co_batch_start += batch_len
 		
 			### evaluate energy distance between real and gen distributions
 			if itr_total % eval_step == 0:
@@ -577,10 +578,10 @@ Generate attention.
 if att_co is false, im_data passes through the gen transformation.
 '''
 def condet_att(condet, im_data, batch_size=64, att_co=False):
-	im_att = np.zeros(im_data.shape[:3]+[1])
+	im_att = np.zeros(im_data.shape[:3]+(1,))
 	im_trans = np.zeros(im_data.shape)
 	im_rec = np.zeros(im_data.shape)
-	for batch_start in range(0, sample_size, batch_size):
+	for batch_start in range(0, im_data.shape[0], batch_size):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
 		if not att_co:
@@ -627,9 +628,9 @@ def eval_iou(condet, atts, bboxes):
 		for b in range(bbox_mat.shape[0]):
 			bbox = bbox_mat[b]
 			bbox_im[i, bbox[1]:bbox[3], bbox[0]:bbox[2], ...] = 1.0
-	bbox_sum = np.sum(bbox_im, axis=[1,2,3])
-	atts_sum = np.sum(atts, axis=[1,2,3])
-	inter_sum = np.sum(atts*bbox_sum, axis=[1,2,3])
+	bbox_sum = np.sum(bbox_im, axis=(1,2,3))
+	atts_sum = np.sum(atts, axis=(1,2,3))
+	inter_sum = np.sum(atts*bbox_im, axis=(1,2,3))
 	uni_sum = bbox_sum + atts_sum - inter_sum
 	iou = inter_sum / uni_sum
 	return np.mean(iou), np.std(iou)
@@ -637,9 +638,8 @@ def eval_iou(condet, atts, bboxes):
 '''
 Returns intersection over union mean and std, net_stats, and draw_im_att
 '''
-def eval_condet(condet, im_data, bboxes, draw_path=None):
+def eval_condet(condet, im_data, bboxes, draw_path=None, sample_size=1000):
 	### sample and batch size
-	sample_size = 1000
 	batch_size = 64
 	draw_size = 20
 	
@@ -657,9 +657,9 @@ def eval_condet(condet, im_data, bboxes, draw_path=None):
 	net_stats = condet.step(None, stats_only=True)
 
 	### iou
-	iou_mean, iou_std = eval_iou(g_att, r_bboxes)
+	iou_mean, iou_std = eval_iou(condet, g_att, r_bboxes)
 
-	return iou, iou_std, net_stats
+	return iou_mean, iou_std, net_stats
 
 
 if __name__ == '__main__':
@@ -697,7 +697,7 @@ if __name__ == '__main__':
 	'''
 	TENSORFLOW SETUP
 	'''
-	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.95)
+	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.3)
 	config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 	sess = tf.Session(config=config)
 	
@@ -714,14 +714,13 @@ if __name__ == '__main__':
 			% (condet.g_vars_count, condet.d_vars_count, condet.a_vars_count, condet.i_vars_count)
 	
 
-	draw_im_att(test_im[:20], test_bbox[:20], path=log_path+'/im_bb.png')
-	sys.exit(0)
+	#draw_im_att(test_im[:20], test_bbox[:20], path=log_path+'/im_bb.png')
 
 	'''
 	GAN SETUP SECTION
 	'''
 	### train condet
-	train_condet(condet, train_co, train_im)
+	train_condet(condet, train_co, train_im, train_bbox)
 
 	### load condet
 	# condet.load(condet_path % run_seed)
@@ -730,7 +729,7 @@ if __name__ == '__main__':
 	GAN DATA EVAL
 	'''
 	draw_path = log_path+'/sample_final.png'
-	iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path)
+	iou_mean, iou_std, net_stats = eval_condet(condet, test_im, test_bbox, draw_path)
 	print ">>> IOU mean: ", iou_mean
 	print ">>> IOU std: ", iou_std
 	sess.close()

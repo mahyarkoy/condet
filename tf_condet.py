@@ -131,7 +131,11 @@ class Condet:
 			### real gen manifold interpolation
 			int_rand = tf.random_uniform([tf.shape(self.g_layer)[0]], dtype=tf_dtype)
 			int_rand = tf.reshape(int_rand, [-1, 1, 1, 1])
-			rg_layer = (1.0 - int_rand) * self.g_layer + int_rand * self.co_input
+			top_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[1]-tf.shape(self.co_input)[1], dtype=tf.int32)
+			left_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[2]-tf.shape(self.co_input)[2], dtype=tf.int32)
+			g_layer_crop = tf.image.crop_to_bounding_box(self.g_layer, offset_height=top_rand[0], offset_width=left_rand[0], 
+				target_height=tf.shape(self.co_input)[1], target_width=tf.shape(self.co_input)[2])
+			rg_layer = (1.0 - int_rand) * g_layer_crop + int_rand * self.co_input
 			self.rg_logits, _ = self.build_dis(rg_layer, self.train_phase, reuse=True)
 
 			### build d losses
@@ -153,8 +157,8 @@ class Condet:
 
 			### gradient penalty
 			### NaN free norm gradient
+			'''
 			rg_grad = tf.gradients(self.rg_logits, rg_layer)
-			#rg_grad_flat = tf.reshape(rg_grad, [-1, np.prod(self.data_dim)])
 			rg_grad_flat = tf.contrib.layers.flatten(rg_grad)
 			rg_grad_ok = tf.reduce_sum(tf.square(rg_grad_flat), axis=1) > 1.
 			rg_grad_safe = tf.where(rg_grad_ok, rg_grad_flat, tf.ones_like(rg_grad_flat))
@@ -165,14 +169,15 @@ class Condet:
 			gp_loss = tf.square(rg_grad_norm - 1.0)
 			### for logging
 			self.rg_grad_norm_output = tf.norm(rg_grad_flat, axis=1)
+			'''
 			
 			### d loss combination **weighted**
 			self.d_loss_mean = tf.reduce_mean(
 				tf.reduce_sum(r_att_gt * self.d_r_loss, axis=[1,2,3]) + \
 				tf.reduce_sum(self.g_att * self.d_g_loss, axis=[1,2,3]))
 
-			self.d_loss_total = self.d_loss_mean + \
-				self.gp_loss_weight * tf.reduce_mean(gp_loss) ## enforcing gp everywhere
+			self.d_loss_total = self.d_loss_mean #+ \
+				#self.gp_loss_weight * tf.reduce_mean(gp_loss) ## enforcing gp everywhere
 
 			### build g loss
 			if self.g_loss_type == 'log':
@@ -196,7 +201,7 @@ class Condet:
 			self.g_att_us = conv2d_tr(self.g_att, 1, k_h=29, k_w=29, d_h=8, d_w=8, scope='rec_deconv_g', k_init=k_init, trainable=False)
 			self.r_att_us = conv2d_tr(self.r_att, 1, k_h=29, k_w=29, d_h=8, d_w=8, scope='rec_deconv_r', k_init=k_init, trainable=False)
 			self.rec_loss_mean = tf.reduce_mean(tf.reduce_sum(
-					self.g_att_us * tf.square(self.i_layer - self.co_input), axis=[1,2,3]))
+					self.g_att_us * tf.square(self.i_layer - self.im_input), axis=[1,2,3]))
 
 			#self.g_grad_norm = tf.norm(tf.reshape(
 			#	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.data_dim)]), axis=1)
@@ -269,18 +274,20 @@ class Condet:
 
 	def build_gen(self, z, train_phase):
 		act = self.g_act
+		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('g_net'):
 			h1 = act(conv2d(z, 32, scope='conv1'))
-			h2 = act(conv2d(h1, 32, scope='conv2'))
+			h2 = act(bn(conv2d(h1, 32, scope='conv2')))
 			h3 = conv2d(h2, 3, scope='conv3')
 			o = tf.tanh(h3)
 		return o
 
 	def build_rec(self, x, train_phase):
 		act = self.rec_act
+		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('i_net'):
 			h1 = act(conv2d(x, 32, scope='conv1'))
-			h2 = act(conv2d(h1, 32, scope='conv2'))
+			h2 = act(bn(conv2d(h1, 32, scope='conv2')))
 			h3 = conv2d(h2, 3, scope='conv3')
 			o = tf.tanh(h3)
 		return o
@@ -322,14 +329,15 @@ class Condet:
 	def step(self, im_data, co_data=None, gen_update=False, 
 		gen_only=False, stats_only=False, 
 		att_only_co=False, att_only_im=False):
-		batch_size = im_data.shape[0]		
-		im_data = im_data.astype(np_dtype) if im_data is not None else None
-		co_data = co_data.astype(np_dtype) if co_data is not None else None
 
 		if stats_only:
 			res_list = [self.nan_vars, self.inf_vars, self.zero_vars, self.big_vars]
 			res_list = self.sess.run(res_list, feed_dict={})
 			return res_list
+
+		batch_size = im_data.shape[0]		
+		im_data = im_data.astype(np_dtype) if im_data is not None else None
+		co_data = co_data.astype(np_dtype) if co_data is not None else None
 
 		### only forward attention on im_data using co_input (no transformation)
 		if att_only_co:
