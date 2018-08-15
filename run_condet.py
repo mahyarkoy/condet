@@ -27,13 +27,13 @@ from skimage.transform import resize
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
 from sklearn.utils.graph import graph_shortest_path
 import sys
-import scipy
+import scipy.io as sio
 import skimage.io as skio
 import glob
 from PIL import Image
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID" # so the IDs match nvidia-smi
-os.environ["CUDA_VISIBLE_DEVICES"] = "1" # "0, 1" for multiple
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" # "0, 1" for multiple
 
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('-l', '--log-path', dest='log_path', required=True, help='log directory to store logs.')
@@ -67,7 +67,7 @@ def read_svhn_prep(path):
 	### read data
 	with open(path, 'rb') as fs:
 		bboxes, im_data, im_names = pk.load(fs)
-	return bboxes, im_data * 2. / 255. - 1., im_names
+	return bboxes, np.array(im_data) * 2. / 255. - 1., im_names
 
 '''
 Reads svhn center and resize 32*32 images
@@ -391,7 +391,15 @@ ims: image tensor
 bboxes: bbox matrix, row wise (l, t, r, b)
 atts: attention tensor, same shape as ims
 '''
-def draw_im_att(ims, bboxes, atts):
+def draw_im_att(ims, bboxes, path, trans=None, recs=None, atts=None):
+	ims_bb = draw_bbox(ims, bboxes)
+	### each column is one image info
+	if trans is not None:
+		atts_tile = np.tile(atts, [1, 1, 1, 3])
+		im_mat = np.stack([ims_bb, recs, atts_tile * 2. - 1., trans, atts_tile*trans], axis=1)
+	else:
+		im_mat = np.stack([ims_bb], axis=1)
+	block_draw(im_mat, path, border=True)
 	return
 
 '''
@@ -400,7 +408,18 @@ ims: image tensor
 bboxes: bbox matrix, row wise (l, t, r, b)
 '''
 def draw_bbox(ims, bboxes):
-	return
+	ims = np.array(ims)
+	bcolor = 2.*np.array([1.0, 0.0, 0.0]) - 1.
+	for i in range(ims.shape[0]):
+		im = ims[i, ...]
+		bbox_mat = bboxes[i]
+		for b in range(bbox_mat.shape[0]):
+			bbox = bbox_mat[b, ...]
+			im[bbox[1]:bbox[3]+1, bbox[0], ...] = bcolor
+			im[bbox[1]:bbox[3]+1, bbox[2], ...] = bcolor
+			im[bbox[1], bbox[0]:bbox[2]+1, ...] = bcolor
+			im[bbox[3], bbox[0]:bbox[2]+1, ...] = bcolor
+	return ims
 
 def shuffle_data(im_data, im_bboxes=None):
 	order = np.arange(im_data.shape[0])
@@ -423,7 +442,7 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 	train_size = im_data.shape[0]
 
 	### training configs
-	max_itr_total = 5e5
+	max_itr_total = 3e3
 	d_updates = 5
 	g_updates = 1
 	batch_size = 32
@@ -436,11 +455,7 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 	d_g_logs = list()
 	eval_logs = list()
 	stats_logs = list()
-	norms_logs = list()
 	itrs_logs = list()
-	rl_vals_logs = list()
-	rl_pvals_logs = list()
-	en_acc_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -448,7 +463,7 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 	itr_total = 0
 	epoch = 0
 	d_update_flag = True
-	widgets = ["Ganist", Percentage(), Bar(), ETA()]
+	widgets = ["Condet", Percentage(), Bar(), ETA()]
 	pbar = ProgressBar(maxval=max_itr_total, widgets=widgets)
 	pbar.start()
 
@@ -480,17 +495,12 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 		
 			### evaluate energy distance between real and gen distributions
 			if itr_total % eval_step == 0:
-				draw_path = log_path_draw+'/gen_sample_%d' % itr_total if itr_total % draw_step == 0 \
+				draw_path = log_path_draw+'/sample_%d.png' % itr_total if itr_total % draw_step == 0 \
 					else None
-				e_dist, fid_dist, net_stats = eval_ganist(ganist, train_dataset, draw_path)
+				iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path)
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
-				eval_logs.append([e_dist, fid_dist])
+				eval_logs.append([iou_mean, iou_std])
 				stats_logs.append(net_stats)
-				### log norms every epoch
-				d_sample_size = 100
-				_, grad_norms = run_ganist_disc(ganist, 
-					train_dataset[0:d_sample_size, ...], batch_size=256)
-				norms_logs.append([np.max(grad_norms), np.mean(grad_norms), np.std(grad_norms)])
 				itrs_logs.append(itr_total)
 
 			### discriminator update
@@ -520,7 +530,6 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 			continue
 		eval_logs_mat = np.array(eval_logs)
 		stats_logs_mat = np.array(stats_logs)
-		norms_logs_mat = np.array(norms_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -531,28 +540,19 @@ def train_condet(condet, co_data, im_data, im_bboxes, labels=None):
 		### plot norms
 		fig, ax = plt.subplots(figsize=(8, 6))
 		ax.clear()
-		ax.plot(itrs_logs, norms_logs_mat[:,0], color='r', label='max_norm')
-		ax.plot(itrs_logs, norms_logs_mat[:,1], color='b', label='mean_norm')
-		ax.plot(itrs_logs, norms_logs_mat[:,1]+norms_logs_mat[:,2], color='b', linestyle='--')
-		ax.plot(itrs_logs, norms_logs_mat[:,1]-norms_logs_mat[:,2], color='b', linestyle='--')
+		ax.plot(itrs_logs, eval_logs_mat[:,0], color='b', label='mean_iou')
+		ax.plot(itrs_logs, eval_logs_mat[:,0]+eval_logs_mat[:,1], color='b', linestyle='--')
+		ax.plot(itrs_logs, eval_logs_mat[:,0]-eval_logs_mat[:,1], color='b', linestyle='--')
 		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Norm Grads')
+		ax.set_title('Mean IOU')
 		ax.set_xlabel('Iterations')
 		ax.set_ylabel('Values')
 		ax.legend(loc=0)
-		fig.savefig(log_path+'/norm_grads.png', dpi=300)
+		fig.savefig(log_path+'/mean_iou.png', dpi=300)
 		plt.close(fig)
 
-	### save norm_logs
-	with open(log_path+'/norm_grads.cpk', 'wb+') as fs:
-		pk.dump(norms_logs_mat, fs)
-
-	### save pval_logs
-	with open(log_path+'/rl_pvals.cpk', 'wb+') as fs:
-		pk.dump([itrs_logs, rl_pvals_logs_mat], fs)
-
 	### save eval_logs
-	with open(log_path+'/eval_logs.cpk', 'wb+') as fs:
+	with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
 		pk.dump([itrs_logs, eval_logs_mat], fs)
 
 '''
@@ -573,6 +573,35 @@ def sample_ganist(ganist, sample_size, sampler=None, batch_size=64,
 	return g_samples
 
 '''
+Generate attention.
+if att_co is false, im_data passes through the gen transformation.
+'''
+def condet_att(condet, im_data, batch_size=64, att_co=False):
+	im_att = np.zeros(im_data.shape[:3]+[1])
+	im_trans = np.zeros(im_data.shape)
+	im_rec = np.zeros(im_data.shape)
+	for batch_start in range(0, sample_size, batch_size):
+		batch_end = batch_start + batch_size
+		batch_im = im_data[batch_start:batch_end, ...]
+		if not att_co:
+			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], im_att[batch_start:batch_end, ...] = \
+				condet.step(batch_im, att_only_im=True)
+		else:
+			im_att[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
+	return im_trans, im_rec, im_att
+
+'''
+Generate transformation.
+'''
+def condet_trans(condet, im_data, batch_size=64):
+	im_trans = np.zeros(im_data.shape)
+	for batch_start in range(0, sample_size, batch_size):
+		batch_end = batch_start + batch_size
+		batch_im = im_data[batch_start:batch_end, ...]
+		im_trans[batch_start:batch_end, ...] = condet.step(batch_im, gen_only=True)
+	return im_trans
+
+'''
 Run discriminator of ganist on the given im_data, return logits and gradient norms. **g_num**
 '''
 def run_ganist_disc(ganist, im_data, sampler=None, batch_size=64, z_data=None):
@@ -590,52 +619,47 @@ def run_ganist_disc(ganist, im_data, sampler=None, batch_size=64, z_data=None):
 	return logits, grad_norms
 
 '''
-Returns the energy distance of a trained GANist, and draws block images of GAN samples
+Evaluate intersection over union (mean and std over inputs)
 '''
-def eval_condet(ganist, im_data, draw_path=None, sampler=None):
+def eval_iou(condet, atts, bboxes):
+	bbox_im = np.zeros(atts.shape)
+	for i, bbox_mat in enumerate(bboxes):
+		for b in range(bbox_mat.shape[0]):
+			bbox = bbox_mat[b]
+			bbox_im[i, bbox[1]:bbox[3], bbox[0]:bbox[2], ...] = 1.0
+	bbox_sum = np.sum(bbox_im, axis=[1,2,3])
+	atts_sum = np.sum(atts, axis=[1,2,3])
+	inter_sum = np.sum(atts*bbox_sum, axis=[1,2,3])
+	uni_sum = bbox_sum + atts_sum - inter_sum
+	iou = inter_sum / uni_sum
+	return np.mean(iou), np.std(iou)
+
+'''
+Returns intersection over union mean and std, net_stats, and draw_im_att
+'''
+def eval_condet(condet, im_data, bboxes, draw_path=None):
 	### sample and batch size
-	sample_size = 10000
+	sample_size = 1000
 	batch_size = 64
-	draw_size = 10
-	sampler = sampler if sampler is not None else ganist.step
+	draw_size = 20
 	
 	### collect real and gen samples **mt**
 	r_samples = im_data[0:sample_size, ...]
-	g_samples = sample_ganist(ganist, sample_size, sampler=sampler,
-		z_im=im_data[-sample_size:, ...])
-	
-	### calculate energy distance
-	#rr_score = np.mean(np.sqrt(np.sum(np.square( \
-	#	r_samples[0:sample_size//2, ...] - r_samples[sample_size//2:, ...]), axis=1)))
-	#gg_score = np.mean(np.sqrt(np.sum(np.square( \
-	#	g_samples[0:sample_size//2, ...] - g_samples[sample_size//2:, ...]), axis=1)))
-	#rg_score = np.mean(np.sqrt(np.sum(np.square( \
-	#	r_samples[0:sample_size//2, ...] - g_samples[0:sample_size//2, ...]), axis=1)))
+	r_bboxes = bboxes[0:sample_size]
+	g_samples, g_rec, g_att = condet_att(condet, r_samples)
 
 	### draw block image of gen samples
 	if draw_path is not None:
-		g_samples = g_samples.reshape((-1,) + im_data.shape[1:])
-		### manifold interpolation drawing mode **mt** **g_num**
-		'''
-		gr_samples = im_data[-sample_size:, ...]
-		gr_flip = np.array(gr_samples)
-		for batch_start in range(0, sample_size, batch_size):
-			batch_end = batch_start + batch_size
-			gr_flip[batch_start:batch_end, ...] = np.flip(gr_flip[batch_start:batch_end, ...], axis=0)
-		draw_samples = np.concatenate([g_samples, gr_samples, gr_flip], axis=3)
-		im_block_draw(draw_samples, draw_size, draw_path)
-		'''
-		### **g_num**
-		im_block_draw(g_samples, draw_size, draw_path+'.png', ganist=ganist)
-		gset_block_draw(ganist, 10, draw_path+'_gset.png', en_color=True)
+		draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
+			g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
 
 	### get network stats
-	net_stats = ganist.step(None, None, stats_only=True)
+	net_stats = condet.step(None, stats_only=True)
 
-	### fid
-	fid = eval_fid(ganist.sess, r_samples, g_samples)
+	### iou
+	iou_mean, iou_std = eval_iou(g_att, r_bboxes)
 
-	return fid, fid, net_stats
+	return iou, iou_std, net_stats
 
 
 if __name__ == '__main__':
@@ -686,35 +710,28 @@ if __name__ == '__main__':
 	### save network initially
 	condet.save(log_path_snap+'/model_0_0.h5')
 	with open(log_path+'/vars_count_log.txt', 'w+') as fs:
-		print >>fs, '>>> g_vars: %d --- d_vars: %d --- e_vars: %d' \
-			% (condet.g_vars_count, condet.d_vars_count, condet.e_vars_count)
+		print >>fs, '>>> g_vars: %d --- d_vars: %d --- a_vars: %d --- i_vars: %d' \
+			% (condet.g_vars_count, condet.d_vars_count, condet.a_vars_count, condet.i_vars_count)
 	
+
+	draw_im_att(test_im[:20], test_bbox[:20], path=log_path+'/im_bb.png')
+	sys.exit(0)
+
 	'''
 	GAN SETUP SECTION
 	'''
 	### train condet
 	train_condet(condet, train_co, train_im)
 
-	### load ganist **g_num**
+	### load condet
 	# condet.load(condet_path % run_seed)
-	### gset draws: run sample_draw before block_draw_top to load learned gset prior
-	#gset_sample_draw(ganist, 10)
-	gset_block_draw(ganist, 10, log_path+'/gset_samples.png', border=True)
-	gset_block_draw_top(ganist, 10, log_path+'/gset_top_samples.png', pr_th=0.99 / ganist.g_num)
-	#sys.exit(0)
 
 	'''
 	GAN DATA EVAL
 	'''
-	gan_model = ganist#vae
-	sampler = ganist.step#vae.step
-	### sample gen data and draw **mt**
-	g_samples = sample_ganist(gan_model, sample_size, sampler=sampler,
-		z_im=r_samples[0:sample_size, ...])
-	#im_block_draw(g_samples, 10, log_path_draw+'/gen_samples.png')
-	im_block_draw(r_samples, 5, log_path_draw+'/real_samples.png', border=True)
-	im_block_draw(g_samples, 5, log_path_draw+'/gen_samples.png', border=True)
-	#sys.exit(0)
-
+	draw_path = log_path+'/sample_final.png'
+	iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path)
+	print ">>> IOU mean: ", iou_mean
+	print ">>> IOU std: ", iou_std
 	sess.close()
 

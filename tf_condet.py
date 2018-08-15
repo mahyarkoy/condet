@@ -87,7 +87,9 @@ class Condet:
 		#self.d_act = tf.tanh
 		#self.g_act = tf.tanh
 		self.d_act = lrelu
-		self.g_act = tf.nn.relu
+		self.g_act = lrelu
+		self.rec_act = lrelu
+		self.a_act = lrelu
 
 		### init graph and session
 		self.build_graph()
@@ -122,12 +124,12 @@ class Condet:
 			updates = tf.constant([1.0])
 			r_att_gt = tf.scatter_nd([inds[1:3]], updates, r_att_shape[1:3])
 			r_att_gt = tf.reshape(r_att_gt, [1, r_att_shape[1], r_att_shape[2], 1])
-			print '>>> r_att_gt shape: ', self.r_att_gt.get_shape().as_list()
+			print '>>> r_att_gt shape: ', r_att_gt.get_shape().as_list()
 			### build real attention loss
 			self.r_att_loss = tf.reduce_mean(tf.reduce_sum(tf.square(r_att_gt - self.r_att), axis=[1,2,3]))
 
 			### real gen manifold interpolation
-			int_rand = tf.random_uniform(tf.shape(g_layer)[0], dtype=tf_dtype)
+			int_rand = tf.random_uniform([tf.shape(self.g_layer)[0]], dtype=tf_dtype)
 			int_rand = tf.reshape(int_rand, [-1, 1, 1, 1])
 			rg_layer = (1.0 - int_rand) * self.g_layer + int_rand * self.co_input
 			self.rg_logits, _ = self.build_dis(rg_layer, self.train_phase, reuse=True)
@@ -152,7 +154,8 @@ class Condet:
 			### gradient penalty
 			### NaN free norm gradient
 			rg_grad = tf.gradients(self.rg_logits, rg_layer)
-			rg_grad_flat = tf.reshape(rg_grad, [-1, np.prod(self.data_dim)])
+			#rg_grad_flat = tf.reshape(rg_grad, [-1, np.prod(self.data_dim)])
+			rg_grad_flat = tf.contrib.layers.flatten(rg_grad)
 			rg_grad_ok = tf.reduce_sum(tf.square(rg_grad_flat), axis=1) > 1.
 			rg_grad_safe = tf.where(rg_grad_ok, rg_grad_flat, tf.ones_like(rg_grad_flat))
 			#rg_grad_abs = tf.where(rg_grad_flat >= 0., rg_grad_flat, -rg_grad_flat)
@@ -165,7 +168,7 @@ class Condet:
 			
 			### d loss combination **weighted**
 			self.d_loss_mean = tf.reduce_mean(
-				tf.reduce_sum(self.r_att_gt * self.d_r_loss, axis=[1,2,3]) + \
+				tf.reduce_sum(r_att_gt * self.d_r_loss, axis=[1,2,3]) + \
 				tf.reduce_sum(self.g_att * self.d_g_loss, axis=[1,2,3]))
 
 			self.d_loss_total = self.d_loss_mean + \
@@ -260,8 +263,9 @@ class Condet:
 			### summaries **g_num**
 			g_loss_sum = tf.summary.scalar("g_loss", self.g_loss_mean)
 			d_loss_sum = tf.summary.scalar("d_loss", self.d_loss_mean)
-			rec_loss_sum = tf.summary.scalar("e_loss", self.rec_loss_mean)
-			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, rec_loss_sum])
+			rec_loss_sum = tf.summary.scalar("rec_loss", self.rec_loss_mean)
+			r_att_loss_sum = tf.summary.scalar("r_att_loss", self.r_att_loss)
+			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, r_att_loss_sum])
 
 	def build_gen(self, z, train_phase):
 		act = self.g_act
@@ -269,7 +273,7 @@ class Condet:
 			h1 = act(conv2d(z, 32, scope='conv1'))
 			h2 = act(conv2d(h1, 32, scope='conv2'))
 			h3 = conv2d(h2, 3, scope='conv3')
-			o = tf.tanh(z + h3)
+			o = tf.tanh(h3)
 		return o
 
 	def build_rec(self, x, train_phase):
@@ -278,7 +282,7 @@ class Condet:
 			h1 = act(conv2d(x, 32, scope='conv1'))
 			h2 = act(conv2d(h1, 32, scope='conv2'))
 			h3 = conv2d(h2, 3, scope='conv3')
-			o = tf.tanh(z + h3)
+			o = tf.tanh(h3)
 		return o
 
 	def build_dis(self, data_layer, train_phase, reuse=False):
@@ -292,7 +296,7 @@ class Condet:
 			o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
 		return o, h3
 
-	def build_att(self, hidden_layer, act, train_phase, reuse=False):
+	def build_att(self, hidden_layer, train_phase, reuse=False):
 		act = self.a_act
 		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('a_net'):
@@ -327,19 +331,20 @@ class Condet:
 			res_list = self.sess.run(res_list, feed_dict={})
 			return res_list
 
-		### only forward attention on co_data
+		### only forward attention on im_data using co_input (no transformation)
 		if att_only_co:
-			feed_dict = {self.co_input: co_data, self.train_phase: False}
-			res_list = self.sess.run(self.g_att_us, feed_dict=feed_dict)
-			return res_list
-
-		### only forward attention on im_data
-		if att_only_im:
-			feed_dict = {self.im_input: im_data, self.train_phase: False}
+			feed_dict = {self.co_input: im_data, self.train_phase: False}
 			res_list = self.sess.run(self.r_att_us, feed_dict=feed_dict)
 			return res_list
 
-		### only forward generator on co_data
+		### only forward attention on im_data using im_input (with transformation)
+		if att_only_im:
+			feed_dict = {self.im_input: im_data, self.train_phase: False}
+			res_list = [self.g_layer, self.i_layer, self.g_att_us]
+			res_list = self.sess.run(res_list, feed_dict=feed_dict)
+			return res_list
+
+		### only forward generator on im_data
 		if gen_only:
 			feed_dict = {self.im_input: im_data, self.train_phase: False}
 			g_layer = self.sess.run(self.g_layer, feed_dict=feed_dict)

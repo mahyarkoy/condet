@@ -1,0 +1,5 @@
+logs*
+*.pyc
+snapshots
+plots/
+cl_plots/
