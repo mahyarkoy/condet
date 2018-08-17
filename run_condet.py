@@ -60,7 +60,68 @@ os.system('mkdir -p '+log_path_draw)
 os.system('mkdir -p '+log_path_sum)
 
 '''
-Reads svhn_prep data from file and return (bboxes, data).
+Generate noise background of im_size, and randomly paste co_data into it. pixel value is [0,1].
+sample_size: if None the same number of samples as co_data are generated.
+im_size w,h must be larger than co_data w,h
+'''
+def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
+	co_size = co_data.shape[1:]
+	sample_size = co_data.shape[0] if sample_size is None else sample_size
+	
+	### generate random bg
+	#bgc = np.array([0., 0.5, 0.5]).reshape((1,1,1,3))
+	#im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
+	im_bg = np.random.uniform(size=(sample_size,)+im_size)
+
+	### generate random bounding boxes with mnist digits
+	top_rand = np.random.randint(im_size[0]-co_size[0], size=sample_size)
+	left_rand = np.random.randint(im_size[1]-co_size[1], size=sample_size)
+	im_bboxes = list()
+	for i in range(sample_size):
+		im_bg[i, top_rand[i]:top_rand[i]+co_size[0], left_rand[i]:left_rand[i]+co_size[1], ...] = \
+			co_data[i%sample_size, ...]
+		im_bboxes.append(np.array(
+			[left_rand[i], top_rand[i], left_rand[i]+co_size[1], top_rand[i]+co_size[0]]).reshape(1,4))
+	return im_bboxes, im_bg
+
+'''
+Crop and resize single channel input (W,H) into im_size shape (PIL).
+'''
+def im_sq_resize(im_input, im_size, square=False):
+	im = Image.fromarray(im_input, mode='F')
+	im_sq = im
+	if square:
+		w, h = im.size
+		im_cut = min(w, h)
+		left = (w - im_cut) //2
+		top = (h - im_cut) //2
+		right = (w + im_cut) //2
+		bottom = (h + im_cut) //2
+		im_sq = im.crop((left, top, right, bottom))
+	im_re_pil = im_sq.resize((im_size[1], im_size[0]), Image.BILINEAR)
+	im_re = np.array(im_re_pil.getdata()).reshape(im_size)
+	im.close()
+	return im_re
+
+'''
+Get mnist [0,1] raw input data and return (bboxes, im_data, co_data) in [-1,1].
+bboxes: a list where each item is a matrix corresponding to one images with (l, t, r, b) as rows
+'''
+def prep_mnist(im_input, co_size=(32, 32, 3)):
+	### read content images and resize to co_size
+	im_input = im_input.reshape((im_input.shape[0], 28, 28, 1))
+	im_input_re = np.zeros((im_input.shape[0], co_size[0], co_size[1], 1))
+	for i in range(im_input.shape[0]):
+		im_input_re[i, ...] = im_sq_resize(im_input[i, ..., 0], (co_size[0], co_size[1], 1))
+			#resize(im_input[i, ...], (co_size[0], co_size[1]), preserve_range=True)
+	co_data = np.tile(im_input_re, [1,1,1,3])
+
+	### put co_data on random background
+	bboxes, im_data = make_rand_bg(co_data)
+	return bboxes, im_data * 2. - 1., co_data * 2. - 1.
+
+'''
+Reads svhn_prep data from file and return (bboxes, data, names) in [-1,1].
 bboxes: a list where each item is a matrix corresponding to one images with (l, t, r, b) as rows
 '''
 def read_svhn_prep(path):
@@ -437,7 +498,7 @@ co_data: content images
 im_data: input images
 im_bboxes: bounding boxes for each input image (list where each element row wise matrix of bbox coordinates)
 '''
-def train_condet(condet, co_data, im_data, im_bbox, labels=None):
+def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 	### dataset definition
 	train_size = im_data.shape[0]
 
@@ -456,6 +517,7 @@ def train_condet(condet, co_data, im_data, im_bbox, labels=None):
 	eval_logs = list()
 	stats_logs = list()
 	itrs_logs = list()
+	norms_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -504,6 +566,10 @@ def train_condet(condet, co_data, im_data, im_bbox, labels=None):
 				stats_logs.append(net_stats)
 				itrs_logs.append(itr_total)
 
+				### norm logs
+				grad_norms = condet.step(batch_im, batch_co, disc_only=True)
+				norms_logs.append([np.max(grad_norms), np.mean(grad_norms), np.std(grad_norms)])
+
 			### discriminator update
 			if d_update_flag is True:
 				batch_sum, batch_g_data = condet.step(batch_im, batch_co, gen_update=False)
@@ -531,6 +597,7 @@ def train_condet(condet, co_data, im_data, im_bbox, labels=None):
 			continue
 		eval_logs_mat = np.array(eval_logs)
 		stats_logs_mat = np.array(stats_logs)
+		norms_logs_mat = np.array(norms_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -538,7 +605,7 @@ def train_condet(condet, co_data, im_data, im_bbox, labels=None):
 		#plot_time_mat(eval_logs_mat, eval_logs_names, 1, log_path, itrs=itrs_logs)
 		plot_time_mat(stats_logs_mat, stats_logs_names, 1, log_path, itrs=itrs_logs)
 		
-		### plot norms
+		### plot IOU
 		fig, ax = plt.subplots(figsize=(8, 6))
 		ax.clear()
 		ax.plot(itrs_logs, eval_logs_mat[:,0], color='b', label='mean_iou')
@@ -550,6 +617,21 @@ def train_condet(condet, co_data, im_data, im_bbox, labels=None):
 		ax.set_ylabel('Values')
 		ax.legend(loc=0)
 		fig.savefig(log_path+'/mean_iou.png', dpi=300)
+		plt.close(fig)
+
+		### plot norms
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		ax.plot(itrs_logs, norms_logs_mat[:,0], color='r', label='max_norm')
+		ax.plot(itrs_logs, norms_logs_mat[:,1], color='b', label='mean_norm')
+		ax.plot(itrs_logs, norms_logs_mat[:,1]+norms_logs_mat[:,2], color='b', linestyle='--')
+		ax.plot(itrs_logs, norms_logs_mat[:,1]-norms_logs_mat[:,2], color='b', linestyle='--')
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Norm Grads')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/norm_grads.png', dpi=300)
 		plt.close(fig)
 
 	### save eval_logs
@@ -572,6 +654,7 @@ def sample_ganist(ganist, sample_size, sampler=None, batch_size=64,
 		g_samples[batch_start:batch_end, ...] = \
 			sampler(batch_im, batch_len, gen_only=True, z_data=batch_z, zi_data=batch_zi)
 	return g_samples
+
 
 '''
 Generate attention.
@@ -679,6 +762,7 @@ if __name__ == '__main__':
 	all_imgs = np.concatenate([train_imgs, val_imgs, test_imgs], axis=0)
 	'''
 	### svhn_uncut (as input images)
+	'''
 	svhn_test_path = '/media/evl/Public/Mahyar/Data/svhn/test/svhn_ndarray.cpk'
 	svhn_train_path = '/media/evl/Public/Mahyar/Data/svhn/train/svhn_ndarray.cpk'
 	train_bbox, train_im, train_names = read_svhn_prep(svhn_train_path)
@@ -693,7 +777,16 @@ if __name__ == '__main__':
 	test_co, test_co_labs = read_svhn_32(svhn_32_test)
 	print '>>> CONTENT TRAIN SIZE:', train_co.shape
 	print '>>> CONTENT TEST SIZE:', test_co.shape
-	
+	'''
+
+	### mnist with noise background
+	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
+	train_data, val_data, test_data = read_mnist(mnist_path)
+	train_bbox, train_im, train_co = prep_mnist(train_data[0])
+	test_bbox, test_im, test_co = prep_mnist(test_data[0])
+	print '>>> INPUT TRAIN SIZE:', train_im.shape
+	print '>>> INPUT TEST SIZE:', test_im.shape
+
 	'''
 	TENSORFLOW SETUP
 	'''
@@ -720,7 +813,7 @@ if __name__ == '__main__':
 	GAN SETUP SECTION
 	'''
 	### train condet
-	train_condet(condet, train_co, train_im, train_bbox)
+	train_condet(condet, train_im, train_co, train_bbox)
 
 	### load condet
 	# condet.load(condet_path % run_seed)

@@ -79,7 +79,7 @@ class Condet:
 		self.z_range = 1.0
 		self.data_dim = [None, None, 3]
 		self.gp_loss_weight = 10.0
-		self.rec_loss_weight = 1.0
+		self.rec_loss_weight = 0.0
 		self.r_att_loss_weight = 1.0
 	
 		self.d_loss_type = 'was'
@@ -87,7 +87,7 @@ class Condet:
 		#self.d_act = tf.tanh
 		#self.g_act = tf.tanh
 		self.d_act = lrelu
-		self.g_act = lrelu
+		self.g_act = tf.nn.relu
 		self.rec_act = lrelu
 		self.a_act = lrelu
 
@@ -103,7 +103,8 @@ class Condet:
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
 
 			### build generator (encoder)
-			self.g_layer = self.build_gen(self.im_input, self.train_phase)
+			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
+			self.g_layer = self.im_input
 			
 			### build reconstructor (decoder)
 			self.i_layer = self.build_rec(self.g_layer, self.train_phase)
@@ -115,6 +116,8 @@ class Condet:
 			### build batch attention, shape: (B, k, k, 1)
 			self.r_att = self.build_att(self.r_hidden, self.train_phase)
 			self.g_att = self.build_att(self.g_hidden, self.train_phase, reuse=True)
+			#self.r_att = tf.ones_like(self.r_att) / tf.cast(tf.size(self.r_att) / tf.shape(self.r_att)[0], tf_dtype)
+			#self.g_att = tf.ones_like(self.g_att) / tf.cast(tf.size(self.g_att) / tf.shape(self.g_att)[0], tf_dtype)
 			print '>>> r_att shape: ', self.r_att.get_shape().as_list()
 			print '>>> g_att shape: ', self.g_att.get_shape().as_list()
 
@@ -135,8 +138,11 @@ class Condet:
 			left_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[2]-tf.shape(self.co_input)[2], dtype=tf.int32)
 			g_layer_crop = tf.image.crop_to_bounding_box(self.g_layer, offset_height=top_rand[0], offset_width=left_rand[0], 
 				target_height=tf.shape(self.co_input)[1], target_width=tf.shape(self.co_input)[2])
+			
 			rg_layer = (1.0 - int_rand) * g_layer_crop + int_rand * self.co_input
+			#rg_layer = self.co_input + tf.random_normal(tf.shape(self.co_input), stddev=0.1)
 			self.rg_logits, _ = self.build_dis(rg_layer, self.train_phase, reuse=True)
+			self.rg_logits = tf.reduce_sum(self.rg_logits * r_att_gt, axis=[1,2,3])
 
 			### build d losses
 			if self.d_loss_type == 'log':
@@ -157,9 +163,8 @@ class Condet:
 
 			### gradient penalty
 			### NaN free norm gradient
-			'''
 			rg_grad = tf.gradients(self.rg_logits, rg_layer)
-			rg_grad_flat = tf.contrib.layers.flatten(rg_grad)
+			rg_grad_flat = tf.contrib.layers.flatten(rg_grad[0])
 			rg_grad_ok = tf.reduce_sum(tf.square(rg_grad_flat), axis=1) > 1.
 			rg_grad_safe = tf.where(rg_grad_ok, rg_grad_flat, tf.ones_like(rg_grad_flat))
 			#rg_grad_abs = tf.where(rg_grad_flat >= 0., rg_grad_flat, -rg_grad_flat)
@@ -169,15 +174,14 @@ class Condet:
 			gp_loss = tf.square(rg_grad_norm - 1.0)
 			### for logging
 			self.rg_grad_norm_output = tf.norm(rg_grad_flat, axis=1)
-			'''
 			
 			### d loss combination **weighted**
 			self.d_loss_mean = tf.reduce_mean(
 				tf.reduce_sum(r_att_gt * self.d_r_loss, axis=[1,2,3]) + \
-				tf.reduce_sum(self.g_att * self.d_g_loss, axis=[1,2,3]))
+				tf.reduce_sum(tf.stop_gradient(self.g_att) * self.d_g_loss, axis=[1,2,3]))
 
-			self.d_loss_total = self.d_loss_mean #+ \
-				#self.gp_loss_weight * tf.reduce_mean(gp_loss) ## enforcing gp everywhere
+			self.d_loss_total = self.d_loss_mean + \
+				self.gp_loss_weight * tf.reduce_mean(gp_loss) ## enforcing gp everywhere
 
 			### build g loss
 			if self.g_loss_type == 'log':
@@ -277,7 +281,7 @@ class Condet:
 		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('g_net'):
 			h1 = act(conv2d(z, 32, scope='conv1'))
-			h2 = act(bn(conv2d(h1, 32, scope='conv2')))
+			h2 = act(bn(conv2d(h1, 32, scope='conv2'), is_training=train_phase))
 			h3 = conv2d(h2, 3, scope='conv3')
 			o = tf.tanh(h3)
 		return o
@@ -287,7 +291,7 @@ class Condet:
 		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('i_net'):
 			h1 = act(conv2d(x, 32, scope='conv1'))
-			h2 = act(bn(conv2d(h1, 32, scope='conv2')))
+			h2 = act(bn(conv2d(h1, 32, scope='conv2'), is_training=train_phase))
 			h3 = conv2d(h2, 3, scope='conv3')
 			o = tf.tanh(h3)
 		return o
@@ -295,6 +299,7 @@ class Condet:
 	def build_dis(self, data_layer, train_phase, reuse=False):
 		act = self.d_act
 		bn = tf.contrib.layers.batch_norm
+		ln = tf.contrib.layers.layer_norm
 		with tf.variable_scope('d_net'):
 			### encoding the 64*64*3 image with conv into 8*8*1
 			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
@@ -306,8 +311,13 @@ class Condet:
 	def build_att(self, hidden_layer, train_phase, reuse=False):
 		act = self.a_act
 		bn = tf.contrib.layers.batch_norm
+		ln = tf.contrib.layers.layer_norm
 		with tf.variable_scope('a_net'):
-			h1 = act(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse))
+			#h1 = act(conv2d(hidden_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+			#h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
+			#h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
+			#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
+			h1 = act(ln(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse), reuse=reuse, scope='ln1'))
 			o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
 			o_soft = tf.reshape(tf.nn.softmax(tf.contrib.layers.flatten(o)), tf.shape(o))
 		return o_soft
@@ -327,7 +337,7 @@ class Condet:
 		self.writer.add_summary(sum_str, counter)
 
 	def step(self, im_data, co_data=None, gen_update=False, 
-		gen_only=False, stats_only=False, 
+		gen_only=False, disc_only=False, stats_only=False, 
 		att_only_co=False, att_only_im=False):
 
 		if stats_only:
@@ -357,6 +367,13 @@ class Condet:
 			feed_dict = {self.im_input: im_data, self.train_phase: False}
 			g_layer = self.sess.run(self.g_layer, feed_dict=feed_dict)
 			return g_layer
+
+		### only forward discriminator to compute norms
+		if disc_only:
+			feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: False}
+			res_list = self.rg_grad_norm_output
+			res_list = self.sess.run(res_list, feed_dict=feed_dict)
+			return res_list.flatten()
 
 		### run one training step on discriminator, otherwise on generator, and log **g_num**
 		feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: True}
