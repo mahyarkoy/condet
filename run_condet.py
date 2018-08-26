@@ -33,7 +33,7 @@ import glob
 from PIL import Image
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID" # so the IDs match nvidia-smi
-os.environ["CUDA_VISIBLE_DEVICES"] = "0" # "0, 1" for multiple
+os.environ["CUDA_VISIBLE_DEVICES"] = "1" # "0, 1" for multiple
 
 arg_parser = argparse.ArgumentParser()
 arg_parser.add_argument('-l', '--log-path', dest='log_path', required=True, help='log directory to store logs.')
@@ -48,6 +48,11 @@ np.random.seed(run_seed)
 tf.set_random_seed(run_seed)
 
 import tf_condet
+
+### global colormap set
+#global_cmap = mat_cm.get_cmap('tab20')
+#global_color_locs = np.arange(20) / 20.
+#global_color_set = global_cmap(global_color_locs)
 
 ### log path setups
 mnist_stack_size = 1
@@ -69,9 +74,9 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	sample_size = co_data.shape[0] if sample_size is None else sample_size
 	
 	### generate random bg
-	#bgc = np.array([0., 0.5, 0.5]).reshape((1,1,1,3))
-	#im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
-	im_bg = np.random.uniform(size=(sample_size,)+im_size)
+	bgc = np.array([0., 0.5, 0.5]).reshape((1,1,1,3))
+	im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
+	#im_bg = np.random.uniform(size=(sample_size,)+im_size)
 
 	### generate random bounding boxes with mnist digits
 	top_rand = np.random.randint(im_size[0]-co_size[0], size=sample_size)
@@ -518,6 +523,8 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 	stats_logs = list()
 	itrs_logs = list()
 	norms_logs = list()
+	att_grad_mean_logs = list()
+	g_loss_mean_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -567,8 +574,28 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 				itrs_logs.append(itr_total)
 
 				### norm logs
-				grad_norms = condet.step(batch_im, batch_co, disc_only=True)
+				grad_norms, d_r_loss_mean_sep, g_loss_mean_sep = condet.step(batch_im, batch_co, disc_only=True)
 				norms_logs.append([np.max(grad_norms), np.mean(grad_norms), np.std(grad_norms)])
+				att_grad_mean_logs.append(d_r_loss_mean_sep)
+				g_loss_mean_logs.append(g_loss_mean_sep)
+				
+				### g_att and its grad plots
+				fig, ax = plt.subplots(figsize=(8, 6))
+				ax.clear()
+				ims = ax.matshow(d_r_loss_mean_sep.reshape((4,4)))
+				ax.set_title('d_r_loss mean')
+				fig.colorbar(ims)
+				fig.savefig(log_path_draw+'/sep_loss_%d_d_r.png' % itr_total, dpi=300)
+				plt.close(fig)
+				
+				### g_att and its grad plots
+				fig, ax = plt.subplots(figsize=(8, 6))
+				ax.clear()
+				ims = ax.matshow(g_loss_mean_sep.reshape((8,8)))
+				ax.set_title('g_loss mean')
+				fig.colorbar(ims)
+				fig.savefig(log_path_draw+'/sep_loss_%d_g.png' % itr_total, dpi=300)
+				plt.close(fig)
 
 			### discriminator update
 			if d_update_flag is True:
@@ -598,6 +625,8 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 		eval_logs_mat = np.array(eval_logs)
 		stats_logs_mat = np.array(stats_logs)
 		norms_logs_mat = np.array(norms_logs)
+		att_grad_mean_mat = np.array(att_grad_mean_logs)
+		g_loss_mean_mat = np.array(g_loss_mean_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -634,6 +663,39 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 		fig.savefig(log_path+'/norm_grads.png', dpi=300)
 		plt.close(fig)
 
+		### plot att_grad_mean
+		'''
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		for i in range(att_grad_mean_mat.shape[1]):
+			ax.plot(itrs_logs, att_grad_mean_mat[:,i])
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('g_att grad mean')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/att_grad_mean.png', dpi=300)
+		plt.close(fig)
+		grad_max = np.argmax(np.mean(att_grad_mean_mat, axis=0))
+		print '>>> G ATT GRAD MAX:', grad_max
+		'''
+
+		### plot g_loss_mean_sep
+		'''
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		for i in range(g_loss_mean_mat.shape[1]):
+			ax.plot(itrs_logs, g_loss_mean_mat[:,i])
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('g_loss mean')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/g_loss_mean.png', dpi=300)
+		plt.close(fig)
+		g_loss_min = np.argmin(np.mean(g_loss_mean_mat, axis=0))
+		print '>>> G LOSS MIN:', g_loss_min
+		'''
 	### save eval_logs
 	with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
 		pk.dump([itrs_logs, eval_logs_mat], fs)

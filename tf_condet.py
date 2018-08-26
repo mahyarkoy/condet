@@ -66,24 +66,18 @@ class Condet:
 		self.d_lr = 2e-4
 		self.d_beta1 = 0.5
 		self.d_beta2 = 0.5
-		self.e_lr = 2e-4
-		self.e_beta1 = 0.9
-		self.e_beta2 = 0.999
-		self.pg_lr = 1e-3
-		self.pg_beta1 = 0.5
-		self.pg_beta2 = 0.5
 
 		### network parameters **g_num** **mt**
 		### >>> dataset sensitive: data_dim
 		self.z_dim = 100
 		self.z_range = 1.0
 		self.data_dim = [None, None, 3]
-		self.gp_loss_weight = 10.0
+		self.gp_loss_weight = 0.0
 		self.rec_loss_weight = 0.0
 		self.r_att_loss_weight = 1.0
 	
-		self.d_loss_type = 'was'
-		self.g_loss_type = 'was'
+		self.d_loss_type = 'log'
+		self.g_loss_type = 'mod'
 		#self.d_act = tf.tanh
 		#self.g_act = tf.tanh
 		self.d_act = lrelu
@@ -130,6 +124,18 @@ class Condet:
 			print '>>> r_att_gt shape: ', r_att_gt.get_shape().as_list()
 			### build real attention loss
 			self.r_att_loss = tf.reduce_mean(tf.reduce_sum(tf.square(r_att_gt - self.r_att), axis=[1,2,3]))
+
+			### debug g_att
+			### build real attention ground truth (center 1 hot)
+			#inds = tf.shape(self.g_att) - 1
+			#g_att_shape = tf.shape(self.g_att)
+			inds = tf.constant([1, 1, 7, 1])
+			g_att_shape = tf.constant([1, 8, 8, 1])
+			updates = tf.constant([1.0])
+			g_att_gt = tf.scatter_nd([inds[1:3]], updates, g_att_shape[1:3])
+			g_att_gt = tf.reshape(g_att_gt, [1, g_att_shape[1], g_att_shape[2], 1])
+			print '>>> g_att_gt shape: ', g_att_gt.get_shape().as_list()
+			#self.g_att = g_att_gt
 
 			### real gen manifold interpolation
 			int_rand = tf.random_uniform([tf.shape(self.g_layer)[0]], dtype=tf_dtype)
@@ -198,6 +204,13 @@ class Condet:
 			### g loss mean **weighted**
 			self.g_loss_mean = tf.reduce_mean(
 				tf.reduce_sum(self.g_att * self.g_loss, axis=[1,2,3]), axis=None)
+
+			### g_att and grad logs
+			g_att_grad = tf.gradients(self.g_loss_mean, self.g_att)
+			print '>>> g_att_grad shape: ', g_att_grad[0].get_shape().as_list()
+			self.g_att_grad_mean = tf.reduce_mean(g_att_grad[0], axis=0)
+			self.g_loss_mean_sep = tf.reduce_mean(self.g_loss, axis=0)
+			self.d_r_loss_mean_sep = tf.reduce_mean(self.d_r_loss, axis=0)
 
 			### reconstruction loss mean **weighted** (upsampling with deconv: d_h=num_disc_convs*2 k_h=k_disc+(k-1)*num_disc_convs)
 			#self.g_att_us = tf.image.resize_nearest_neighbor(self.g_att, tf.shape(self.i_layer)[1:3])
@@ -303,23 +316,23 @@ class Condet:
 		with tf.variable_scope('d_net'):
 			### encoding the 64*64*3 image with conv into 8*8*1
 			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
-			h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
+			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
+			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
 			o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
-		return o, h3
+		return o, data_layer
 
 	def build_att(self, hidden_layer, train_phase, reuse=False):
 		act = self.a_act
 		bn = tf.contrib.layers.batch_norm
 		ln = tf.contrib.layers.layer_norm
 		with tf.variable_scope('a_net'):
-			#h1 = act(conv2d(hidden_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			#h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
-			#h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
-			#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
-			h1 = act(ln(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse), reuse=reuse, scope='ln1'))
-			o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
+			h1 = act(conv2d(hidden_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
+			o = conv2d(h2, 1, d_h=2, d_w=2, scope='conv3', reuse=reuse)
+			#h1 = act(ln(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse), reuse=reuse, scope='ln1'))
+			#o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
 			o_soft = tf.reshape(tf.nn.softmax(tf.contrib.layers.flatten(o)), tf.shape(o))
+			#o_soft = tf.nn.sigmoid(o)
 		return o_soft
 
 	def start_session(self):
@@ -371,9 +384,9 @@ class Condet:
 		### only forward discriminator to compute norms
 		if disc_only:
 			feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: False}
-			res_list = self.rg_grad_norm_output
+			res_list = [self.rg_grad_norm_output, self.d_r_loss_mean_sep, self.g_loss_mean_sep]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
-			return res_list.flatten()
+			return res_list[0].flatten(), res_list[1].flatten(), res_list[2].flatten()
 
 		### run one training step on discriminator, otherwise on generator, and log **g_num**
 		feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: True}
