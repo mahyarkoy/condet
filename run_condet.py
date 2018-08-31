@@ -74,9 +74,9 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	sample_size = co_data.shape[0] if sample_size is None else sample_size
 	
 	### generate random bg
-	bgc = np.array([0., 0.5, 0.5]).reshape((1,1,1,3))
-	im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
-	#im_bg = np.random.uniform(size=(sample_size,)+im_size)
+	#bgc = np.array([0., 0.5, 0.5]).reshape((1,1,1,3))
+	#im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
+	im_bg = np.random.uniform(size=(sample_size,)+im_size)
 
 	### generate random bounding boxes with mnist digits
 	top_rand = np.random.randint(im_size[0]-co_size[0], size=sample_size)
@@ -852,7 +852,7 @@ if __name__ == '__main__':
 	'''
 	TENSORFLOW SETUP
 	'''
-	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.3)
+	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9)
 	config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 	sess = tf.Session(config=config)
 	

@@ -74,7 +74,7 @@ class Condet:
 		self.data_dim = [None, None, 3]
 		self.gp_loss_weight = 0.0
 		self.rec_loss_weight = 0.0
-		self.r_att_loss_weight = 1.0
+		self.r_att_loss_weight = 0.0
 	
 		self.d_loss_type = 'log'
 		self.g_loss_type = 'mod'
@@ -319,18 +319,18 @@ class Condet:
 			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
 			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
 			o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
-		return o, data_layer
+		return o, h3
 
 	def build_att(self, hidden_layer, train_phase, reuse=False):
 		act = self.a_act
 		bn = tf.contrib.layers.batch_norm
 		ln = tf.contrib.layers.layer_norm
 		with tf.variable_scope('a_net'):
-			h1 = act(conv2d(hidden_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
-			o = conv2d(h2, 1, d_h=2, d_w=2, scope='conv3', reuse=reuse)
-			#h1 = act(ln(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse), reuse=reuse, scope='ln1'))
-			#o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
+			#h1 = act(conv2d(hidden_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+			#h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
+			#o = conv2d(h2, 1, d_h=2, d_w=2, scope='conv3', reuse=reuse)
+			h1 = act(bn(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse), reuse=reuse, scope='bn1', is_training=train_phase))
+			o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
 			o_soft = tf.reshape(tf.nn.softmax(tf.contrib.layers.flatten(o)), tf.shape(o))
 			#o_soft = tf.nn.sigmoid(o)
 		return o_soft
