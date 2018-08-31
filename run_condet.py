@@ -468,6 +468,16 @@ def draw_im_att(ims, bboxes, path, trans=None, recs=None, atts=None):
 	block_draw(im_mat, path, border=True)
 	return
 
+def draw_im_stn(ims, bboxes, path, trans, recs, stn_bbox, stn_im):
+	ims_bb = draw_bbox(ims, bboxes)
+	ims_stn_bb = draw_bbox(ims, stn_bbox)
+	stn_im_re = np.zeros(ims.shape)
+	for i in range(ims.shape[0])
+		stn_im_re[i, ...] = resize(stn_im[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
+	im_mat = np.stack([ims_bb, ims_stn_bb, stn_im_re, recs, trans], axis=1)
+	block_draw(im_mat, path, border=True)
+	return
+
 '''
 Draws bboxes on top of images.
 ims: image tensor
@@ -486,6 +496,19 @@ def draw_bbox(ims, bboxes):
 			im[bbox[1], bbox[0]:bbox[2]+1, ...] = bcolor
 			im[bbox[3], bbox[0]:bbox[2]+1, ...] = bcolor
 	return ims
+
+'''
+Find bboxes from stn theta: shape (N, 6)
+'''
+def stn_theta_to_bbox(condet, theta):
+	h, w = condet.stn_size
+	bbox_l = theta[:, 2].reshape((-1, 1))
+	bbox_t = theta[:, 5].reshape((-1, 1))
+	bbox_r = bbox_l + theta[:, 0].reshape((-1, 1)) * w
+	bbox_b = bbox_t + theta[:, 4].reshape((-1, 1)) * h
+	bbox = np.concatenate((bbox_l, bbox_t, bbox_r, bbox_b), axis=1)
+	return [bbox[b, ...].reshape((1,4)) for b in range(bbox.shape[0])]
+
 
 def shuffle_data(im_data, im_bboxes=None):
 	order = np.arange(im_data.shape[0])
@@ -579,23 +602,23 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 				att_grad_mean_logs.append(d_r_loss_mean_sep)
 				g_loss_mean_logs.append(g_loss_mean_sep)
 				
-				### g_att and its grad plots
-				fig, ax = plt.subplots(figsize=(8, 6))
-				ax.clear()
-				ims = ax.matshow(d_r_loss_mean_sep.reshape((4,4)))
-				ax.set_title('d_r_loss mean')
-				fig.colorbar(ims)
-				fig.savefig(log_path_draw+'/sep_loss_%d_d_r.png' % itr_total, dpi=300)
-				plt.close(fig)
+				### separate d_r loss mean plots
+				#fig, ax = plt.subplots(figsize=(8, 6))
+				#ax.clear()
+				#ims = ax.matshow(d_r_loss_mean_sep.reshape((4,4)))
+				#ax.set_title('d_r_loss mean')
+				#fig.colorbar(ims)
+				#fig.savefig(log_path_draw+'/sep_loss_%d_d_r.png' % itr_total, dpi=300)
+				#plt.close(fig)
 				
-				### g_att and its grad plots
-				fig, ax = plt.subplots(figsize=(8, 6))
-				ax.clear()
-				ims = ax.matshow(g_loss_mean_sep.reshape((8,8)))
-				ax.set_title('g_loss mean')
-				fig.colorbar(ims)
-				fig.savefig(log_path_draw+'/sep_loss_%d_g.png' % itr_total, dpi=300)
-				plt.close(fig)
+				### separate g loss mean plots
+				#fig, ax = plt.subplots(figsize=(8, 6))
+				#ax.clear()
+				#ims = ax.matshow(g_loss_mean_sep.reshape((8,8)))
+				#ax.set_title('g_loss mean')
+				#fig.colorbar(ims)
+				#fig.savefig(log_path_draw+'/sep_loss_%d_g.png' % itr_total, dpi=300)
+				#plt.close(fig)
 
 			### discriminator update
 			if d_update_flag is True:
@@ -663,39 +686,6 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 		fig.savefig(log_path+'/norm_grads.png', dpi=300)
 		plt.close(fig)
 
-		### plot att_grad_mean
-		'''
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		for i in range(att_grad_mean_mat.shape[1]):
-			ax.plot(itrs_logs, att_grad_mean_mat[:,i])
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('g_att grad mean')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/att_grad_mean.png', dpi=300)
-		plt.close(fig)
-		grad_max = np.argmax(np.mean(att_grad_mean_mat, axis=0))
-		print '>>> G ATT GRAD MAX:', grad_max
-		'''
-
-		### plot g_loss_mean_sep
-		'''
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		for i in range(g_loss_mean_mat.shape[1]):
-			ax.plot(itrs_logs, g_loss_mean_mat[:,i])
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('g_loss mean')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/g_loss_mean.png', dpi=300)
-		plt.close(fig)
-		g_loss_min = np.argmin(np.mean(g_loss_mean_mat, axis=0))
-		print '>>> G LOSS MIN:', g_loss_min
-		'''
 	### save eval_logs
 	with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
 		pk.dump([itrs_logs, eval_logs_mat], fs)
@@ -717,6 +707,19 @@ def sample_ganist(ganist, sample_size, sampler=None, batch_size=64,
 			sampler(batch_im, batch_len, gen_only=True, z_data=batch_z, zi_data=batch_zi)
 	return g_samples
 
+'''
+Random box baseline
+'''
+def rand_baseline_att(im_data, wsize=32):
+	im_att = np.zeros(im_data.shape[:3]+(1,))
+	for b in range(im_data.shape[0]):
+		h, w, _ = im_data[b, ...].shape
+		hc = np.random.randint(h)
+		wc = np.random.randint(w)
+		ht = 0 if hc < h//2 else hc - h//2
+		wl = 0 if wc < w//2 else wc - w//2
+		im_att[b, ht:ht+h, wl:wl+w, ...] = 1.0
+	return im_att
 
 '''
 Generate attention.
@@ -726,15 +729,17 @@ def condet_att(condet, im_data, batch_size=64, att_co=False):
 	im_att = np.zeros(im_data.shape[:3]+(1,))
 	im_trans = np.zeros(im_data.shape)
 	im_rec = np.zeros(im_data.shape)
+	im_theta = np.zeros([im_data.shape[0], 6])
 	for batch_start in range(0, im_data.shape[0], batch_size):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
 		if not att_co:
-			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], im_att[batch_start:batch_end, ...] = \
+			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], 
+			im_att[batch_start:batch_end, ...], im_theta[batch_start:batch_end, ...] = \
 				condet.step(batch_im, att_only_im=True)
 		else:
 			im_att[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
-	return im_trans, im_rec, im_att
+	return im_trans, im_rec, im_att, im_theta
 
 '''
 Generate transformation.
@@ -767,18 +772,25 @@ def run_ganist_disc(ganist, im_data, sampler=None, batch_size=64, z_data=None):
 '''
 Evaluate intersection over union (mean and std over inputs)
 '''
-def eval_iou(condet, atts, bboxes):
-	bbox_im = np.zeros(atts.shape)
-	for i, bbox_mat in enumerate(bboxes):
-		for b in range(bbox_mat.shape[0]):
-			bbox = bbox_mat[b]
-			bbox_im[i, bbox[1]:bbox[3], bbox[0]:bbox[2], ...] = 1.0
+def eval_iou(atts, bboxes):
+	bbox_im = bbox_to_att(bboxes, atts.shape)
 	bbox_sum = np.sum(bbox_im, axis=(1,2,3))
 	atts_sum = np.sum(atts, axis=(1,2,3))
 	inter_sum = np.sum(atts*bbox_im, axis=(1,2,3))
 	uni_sum = bbox_sum + atts_sum - inter_sum
 	iou = inter_sum / uni_sum
 	return np.mean(iou), np.std(iou)
+
+'''
+Convert bboxes to atts
+'''
+def bbox_to_att(bboxes, im_size):
+	bbox_im = np.zeros(im_size)
+	for i, bbox in enumerate(bboxes):
+		for b in range(bbox_mat.shape[0]):
+			bbox = bbox_mat[b]
+			bbox_im[i, bbox[1]:bbox[3], bbox[0]:bbox[2], ...] = 1.0
+	return bbox_im
 
 '''
 Returns intersection over union mean and std, net_stats, and draw_im_att
@@ -791,18 +803,23 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, sample_size=1000):
 	### collect real and gen samples **mt**
 	r_samples = im_data[0:sample_size, ...]
 	r_bboxes = bboxes[0:sample_size]
-	g_samples, g_rec, g_att = condet_att(condet, r_samples)
+	g_samples, g_rec, g_att, g_theta = condet_att(condet, r_samples)
+	g_stn_bbox = stn_theta_to_bbox(condet, g_theta)
 
 	### draw block image of gen samples
 	if draw_path is not None:
-		draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
-			g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
+		draw_im_stn(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
+			g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], 
+			g_stn_bbox[0:draw_size, ...], g_att[0:draw_size, ...])
+		#draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
+		#	g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
 
 	### get network stats
 	net_stats = condet.step(None, stats_only=True)
 
 	### iou
-	iou_mean, iou_std = eval_iou(condet, g_att, r_bboxes)
+	g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
+	iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
 	return iou_mean, iou_std, net_stats
 
@@ -870,6 +887,15 @@ if __name__ == '__main__':
 	
 
 	#draw_im_att(test_im[:20], test_bbox[:20], path=log_path+'/im_bb.png')
+
+	### random att iou
+	sample_size = 1000
+	rand_att = rand_baseline_att(test_im[0:sample_size], wsize=32)
+	draw_im_att(test_im[0:20, ...], test_bbox[0:20], log_path+'/rand_sample.png',
+		trans=test_im[0:20, ...], recs=test_im[0:20, ...], atts=rand_att):
+	iou_mean, iou_std = eval_iou(rand_att, test_bbox[0:sample_size])
+	print ">>> Rand IOU mean: ", iou_mean
+	print ">>> Rand IOU std: ", iou_std
 
 	'''
 	GAN SETUP SECTION
