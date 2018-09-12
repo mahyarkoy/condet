@@ -72,20 +72,22 @@ class Condet:
 		### >>> dataset sensitive: data_dim
 		self.z_dim = 100
 		self.z_range = 1.0
-		self.data_dim = [None, None, 3]
-		self.stn_size = [32, 32]
-		self.gp_loss_weight = 0.0
+		self.data_dim = [64, 64, 3]
+		self.co_dim = [32, 32, 3]
+		self.stn_size = self.co_dim[:2] ### co_dim
+		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 0.0
 		self.r_att_loss_weight = 0.0
 	
-		self.d_loss_type = 'log'
-		self.g_loss_type = 'mod'
+		self.d_loss_type = 'was'
+		self.g_loss_type = 'was'
 		#self.d_act = tf.tanh
 		#self.g_act = tf.tanh
 		self.d_act = lrelu
 		self.g_act = tf.nn.relu
 		self.rec_act = lrelu
 		self.a_act = lrelu
+		self.s_act = lrelu
 
 		### init graph and session
 		self.build_graph()
@@ -95,15 +97,20 @@ class Condet:
 		with tf.name_scope('condet'):
 			### define placeholders for image and content inputs
 			self.im_input = tf.placeholder(tf_dtype, [None]+self.data_dim, name='im_input')
-			self.co_input = tf.placeholder(tf_dtype, [None]+self.data_dim, name='co_input')
+			self.co_input = tf.placeholder(tf_dtype, [None]+self.co_dim, name='co_input')
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
 
 			### build generator (encoder)
 			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
 			self.g_layer = self.im_input
 
+			### theta decay updates
+			self.theta_decay = tf.get_variable('theta_decay', dtype=tf_dtype, initializer=1.)
+			self.theta_decay_opt = tf.assign(self.theta_decay, self.theta_decay * 0.999)
+
 			### build stn
 			self.g_layer_stn, self.theta = self.build_stn(self.g_layer, self.train_phase)
+			print '>>> STN shape: ', self.g_layer_stn.get_shape().as_list()
 			
 			### build reconstructor (decoder)
 			self.i_layer = self.build_rec(self.g_layer, self.train_phase)
@@ -143,8 +150,8 @@ class Condet:
 			##self.g_att = g_att_gt
 
 			### real gen manifold interpolation
-			int_rand = tf.random_uniform([tf.shape(self.g_layer)[0]], dtype=tf_dtype)
-			#int_rand = tf.reshape(int_rand, [-1, 1, 1, 1])
+			int_rand = tf.random_uniform([tf.shape(self.g_layer)[0]], minval=0.0, maxval=1.0, dtype=tf_dtype)
+			int_rand = tf.reshape(int_rand, [-1, 1, 1, 1])
 			#top_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[1]-tf.shape(self.co_input)[1], dtype=tf.int32)
 			#left_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[2]-tf.shape(self.co_input)[2], dtype=tf.int32)
 			#g_layer_crop = tf.image.crop_to_bounding_box(self.g_layer, offset_height=top_rand[0], offset_width=left_rand[0], 
@@ -232,7 +239,7 @@ class Condet:
 			#		self.g_att_us * tf.square(self.i_layer - self.im_input), axis=[1,2,3]))
 
 			##self.g_grad_norm = tf.norm(tf.reshape(
-			##	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.data_dim)]), axis=1)
+			##	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.co_dim)]), axis=1)
 
 			### g loss combination
 			self.g_loss_total = self.g_loss_mean #+ \
@@ -279,10 +286,6 @@ class Condet:
 				self.i_vars_count += int(np.prod(v.get_shape()))
 			for v in self.s_vars:
 				self.s_vars_count += int(np.prod(v.get_shape()))
-
-			### betah decay updates
-			self.theta_decay = tf.get_variable('theta_decay', dtype=tf_dtype, initializer=1.)
-			self.theta_decay_opt = tf.assign(self.theta_decay, self.theta_decay * 0.99)
 
 			### build optimizers
 			update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -337,10 +340,10 @@ class Condet:
 		with tf.variable_scope('d_net'):
 			### encoding the 64*64*3 image with conv into 8*8*1
 			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
-			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
+			h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
+			h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
 			flat = tf.contrib.layers.flatten(h3)
-			o = tf.dense(flat, 1, 'fco', reuse=reuse)
+			o = dense(flat, 1, 'fco', reuse=reuse)
 			#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
 		return o, h3
 
@@ -358,24 +361,30 @@ class Condet:
 			#o_soft = tf.nn.sigmoid(o)
 		return o_soft
 
-	def build_stn(self, data_layer, train_phase):
+	def build_stn(self, data_layer, train_phase, reuse=False):
 		#scale, trans = fc(6)
 		act = self.s_act
+		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('s_net'):
+			### theta net
 			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
 			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
 			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
-			h3_flat = tf.contrib.layers.flatten(h3)
-			sh = dense(h3_flat, 1, 'hscale', reuse=reuse)
-			sw = dense(h3_flat, 1, 'wscales', reuse=reuse)
-			th = dense(h3_flat, 1, 'htrans', reuse=reuse)
-			tw = dense(h3_flat, 1, 'wtrans', reuse=reuse)
-			z = tf.reshape(tf.zero(tf.shape(s)[0], dtype=tf_dtype), [-1, 1])
-			theta_init = tf.get_variable('theta_init', [1,6], initializer=tf.constant([[0., 1., 0., 0., 1., 0.]]))
-			theta = (1-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
+			flat = tf.contrib.layers.flatten(h3)
+			sh = tf.sigmoid(dense(flat, 1, 'hscale', reuse=reuse))
+			sw = tf.sigmoid(dense(flat, 1, 'wscales', reuse=reuse))
+			th = 2.0*tf.sigmoid(dense(flat, 1, 'htrans', reuse=reuse))
+			tw = 2.0*tf.sigmoid(dense(flat, 1, 'wtrans', reuse=reuse))
+
+			z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
+			theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
+			print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
+			theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
 			print '>>> Theta shape: ', theta.get_shape().as_list()
+
+			### stn net
 			stn_layer = stn.transformer(data_layer, theta, self.stn_size)
-		return stn_layer, theta
+		return tf.reshape(stn_layer, [-1]+self.co_dim), theta
 
 	def start_session(self):
 		self.saver = tf.train.Saver(tf.global_variables(), 

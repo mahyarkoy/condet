@@ -74,7 +74,7 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	sample_size = co_data.shape[0] if sample_size is None else sample_size
 	
 	### generate random bg
-	#bgc = np.array([0., 0.5, 0.5]).reshape((1,1,1,3))
+	#bgc = np.array([0., 0., 0.]).reshape((1,1,1,3))
 	#im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
 	im_bg = np.random.uniform(size=(sample_size,)+im_size)
 
@@ -86,7 +86,7 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 		im_bg[i, top_rand[i]:top_rand[i]+co_size[0], left_rand[i]:left_rand[i]+co_size[1], ...] = \
 			co_data[i%sample_size, ...]
 		im_bboxes.append(np.array(
-			[left_rand[i], top_rand[i], left_rand[i]+co_size[1], top_rand[i]+co_size[0]]).reshape(1,4))
+			[left_rand[i], top_rand[i], left_rand[i]+co_size[1]-1, top_rand[i]+co_size[0]-1]).reshape(1,4))
 	return im_bboxes, im_bg
 
 '''
@@ -472,7 +472,7 @@ def draw_im_stn(ims, bboxes, path, trans, recs, stn_bbox, stn_im):
 	ims_bb = draw_bbox(ims, bboxes)
 	ims_stn_bb = draw_bbox(ims, stn_bbox)
 	stn_im_re = np.zeros(ims.shape)
-	for i in range(ims.shape[0])
+	for i in range(ims.shape[0]):
 		stn_im_re[i, ...] = resize(stn_im[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
 	im_mat = np.stack([ims_bb, ims_stn_bb, stn_im_re, recs, trans], axis=1)
 	block_draw(im_mat, path, border=True)
@@ -501,14 +501,34 @@ def draw_bbox(ims, bboxes):
 Find bboxes from stn theta: shape (N, 6)
 '''
 def stn_theta_to_bbox(condet, theta):
-	h, w = condet.stn_size
-	bbox_l = theta[:, 2].reshape((-1, 1))
-	bbox_t = theta[:, 5].reshape((-1, 1))
-	bbox_r = bbox_l + theta[:, 0].reshape((-1, 1)) * w
-	bbox_b = bbox_t + theta[:, 4].reshape((-1, 1)) * h
-	bbox = np.concatenate((bbox_l, bbox_t, bbox_r, bbox_b), axis=1)
-	return [bbox[b, ...].reshape((1,4)) for b in range(bbox.shape[0])]
+	#h, w = condet.data_dim[:2]
+	h = w = 64
+	### bbox left and top
+	bbox_l = (-theta[:,0] + theta[:, 2] + 1.0) * w / 2.0
+	bbox_t = (-theta[:,4] + theta[:, 5] + 1.0) * h / 2.0
+	bbox_l = np.where(bbox_l < 0, 0, bbox_l)
+	bbox_t = np.where(bbox_t < 0, 0, bbox_t)
+	bbox_l = np.where(bbox_l > w-1, w-1, bbox_l)
+	bbox_t = np.where(bbox_t > h-1, h-1, bbox_t)
 
+	### bbox right and bottom
+	bbox_r = (theta[:,0] + theta[:, 2] + 1.0) * w / 2.0
+	bbox_b = (theta[:,4] + theta[:, 5] + 1.0) * h / 2.0
+	bbox_r = np.where(bbox_r < 0, 0, bbox_r)
+	bbox_b = np.where(bbox_b < 0, 0, bbox_b)
+	bbox_r = np.where(bbox_r > w-1, w-1, bbox_r)
+	bbox_b = np.where(bbox_b > h-1, h-1, bbox_b)
+
+	### reshape
+	bbox_l = bbox_l.reshape((-1,1))
+	bbox_t = bbox_t.reshape((-1,1))
+	bbox_r = bbox_r.reshape((-1,1))
+	bbox_b = bbox_b.reshape((-1,1))
+
+	### concat and floor
+	bbox = np.floor(np.concatenate((bbox_l, bbox_t, bbox_r, bbox_b), axis=1))
+	bbox = bbox.astype(np.int32)
+	return [bbox[b, ...].reshape((1,4)) for b in range(bbox.shape[0])]
 
 def shuffle_data(im_data, im_bboxes=None):
 	order = np.arange(im_data.shape[0])
@@ -714,11 +734,9 @@ def rand_baseline_att(im_data, wsize=32):
 	im_att = np.zeros(im_data.shape[:3]+(1,))
 	for b in range(im_data.shape[0]):
 		h, w, _ = im_data[b, ...].shape
-		hc = np.random.randint(h)
-		wc = np.random.randint(w)
-		ht = 0 if hc < h//2 else hc - h//2
-		wl = 0 if wc < w//2 else wc - w//2
-		im_att[b, ht:ht+h, wl:wl+w, ...] = 1.0
+		ht = np.random.randint(h-wsize)
+		wl = np.random.randint(w-wsize)
+		im_att[b, ht:ht+wsize, wl:wl+wsize, ...] = 1.0
 	return im_att
 
 '''
@@ -726,7 +744,8 @@ Generate attention.
 if att_co is false, im_data passes through the gen transformation.
 '''
 def condet_att(condet, im_data, batch_size=64, att_co=False):
-	im_att = np.zeros(im_data.shape[:3]+(1,))
+	#im_att = np.zeros(im_data.shape[:3]+(1,))
+	im_att = np.zeros([im_data.shape[0]]+condet.co_dim)
 	im_trans = np.zeros(im_data.shape)
 	im_rec = np.zeros(im_data.shape)
 	im_theta = np.zeros([im_data.shape[0], 6])
@@ -734,7 +753,7 @@ def condet_att(condet, im_data, batch_size=64, att_co=False):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
 		if not att_co:
-			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], 
+			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
 			im_att[batch_start:batch_end, ...], im_theta[batch_start:batch_end, ...] = \
 				condet.step(batch_im, att_only_im=True)
 		else:
@@ -786,7 +805,7 @@ Convert bboxes to atts
 '''
 def bbox_to_att(bboxes, im_size):
 	bbox_im = np.zeros(im_size)
-	for i, bbox in enumerate(bboxes):
+	for i, bbox_mat in enumerate(bboxes):
 		for b in range(bbox_mat.shape[0]):
 			bbox = bbox_mat[b]
 			bbox_im[i, bbox[1]:bbox[3], bbox[0]:bbox[2], ...] = 1.0
@@ -810,7 +829,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, sample_size=1000):
 	if draw_path is not None:
 		draw_im_stn(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
 			g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], 
-			g_stn_bbox[0:draw_size, ...], g_att[0:draw_size, ...])
+			g_stn_bbox[0:draw_size], g_att[0:draw_size, ...])
 		#draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
 		#	g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
 
@@ -892,7 +911,7 @@ if __name__ == '__main__':
 	sample_size = 1000
 	rand_att = rand_baseline_att(test_im[0:sample_size], wsize=32)
 	draw_im_att(test_im[0:20, ...], test_bbox[0:20], log_path+'/rand_sample.png',
-		trans=test_im[0:20, ...], recs=test_im[0:20, ...], atts=rand_att):
+		trans=test_im[0:20, ...], recs=test_im[0:20, ...], atts=rand_att[0:20, ...])
 	iou_mean, iou_std = eval_iou(rand_att, test_bbox[0:sample_size])
 	print ">>> Rand IOU mean: ", iou_mean
 	print ">>> Rand IOU std: ", iou_std
