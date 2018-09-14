@@ -20,6 +20,7 @@ def conv2d(input_, output_dim,
 		   scope="conv2d", reuse=False, 
 		   padding='same', use_bias=True, trainable=True):
 	
+	k_init = tf.truncated_normal_initializer(stddev=0.02)
 	conv = tf.layers.conv2d(
 		input_, output_dim, [k_h, k_w], strides=[d_h, d_w], 
 		padding=padding, use_bias=use_bias, 
@@ -48,8 +49,8 @@ def dense_batch(x, h_size, scope, phase, reuse=False):
 
 def dense(x, h_size, scope, reuse=False):
 	with tf.variable_scope(scope, reuse=reuse):
-		h1 = tf.contrib.layers.fully_connected(x, h_size, activation_fn=None, scope='dense')
-		#h1 = tf.contrib.layers.fully_connected(x, h_size, activation_fn=None, scope='dense', weights_initializer=tf.truncated_normal_initializer(stddev=0.02))
+		#h1 = tf.contrib.layers.fully_connected(x, h_size, activation_fn=None, scope='dense')
+		h1 = tf.contrib.layers.fully_connected(x, h_size, activation_fn=None, scope='dense', weights_initializer=tf.truncated_normal_initializer(stddev=0.02))
 		#h1 = tf.contrib.layers.fully_connected(x, h_size, activation_fn=None, scope='dense', weights_initializer=tf.contrib.layers.xavier_initializer(uniform=True))
 	return h1
 
@@ -78,6 +79,9 @@ class Condet:
 		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 0.0
 		self.r_att_loss_weight = 0.0
+		self.stn_init_loss_weight = 10.0
+		self.stn_boundary_loss_weight = 10.0
+		self.stn_scale_loss_weight = 1000.0
 	
 		self.d_loss_type = 'was'
 		self.g_loss_type = 'was'
@@ -99,19 +103,38 @@ class Condet:
 			self.im_input = tf.placeholder(tf_dtype, [None]+self.data_dim, name='im_input')
 			self.co_input = tf.placeholder(tf_dtype, [None]+self.co_dim, name='co_input')
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
+			self.penalty_weight = tf.placeholder(tf_dtype, name='penalty_weight')
 
 			### build generator (encoder)
 			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
 			self.g_layer = self.im_input
 
 			### theta decay updates
-			self.theta_decay = tf.get_variable('theta_decay', dtype=tf_dtype, initializer=1.)
+			self.theta_decay = tf.get_variable('theta_decay', dtype=tf_dtype, initializer=.0)
 			self.theta_decay_opt = tf.assign(self.theta_decay, self.theta_decay * 0.999)
 
 			### build stn
 			self.g_layer_stn, self.theta = self.build_stn(self.g_layer, self.train_phase)
 			print '>>> STN shape: ', self.g_layer_stn.get_shape().as_list()
+
+			### stn init penalty
+			self.stn_init_loss = tf.reduce_mean(
+				tf.square(self.theta[:,0] - 1.0) + tf.square(self.theta[:,2]) + \
+				tf.square(self.theta[:,4] - 1.0) + tf.square(self.theta[:,5]))
 			
+			### stn boundary penalty
+			bbox_l = -self.theta[:,0] + self.theta[:, 2]
+			bbox_t = -self.theta[:,4] + self.theta[:, 5]
+			bbox_r = self.theta[:,0] + self.theta[:, 2]
+			bbox_b = self.theta[:,4] + self.theta[:, 5]
+			self.stn_boundary_loss = tf.reduce_mean(
+				-tf.minimum(bbox_l, -1.0) - tf.minimum(bbox_t, -1.0) + \
+				tf.maximum(bbox_r, 1.0) + tf.maximum(bbox_b, 1.0))
+
+			### stn scale penalty
+			self.stn_scale_loss = -tf.reduce_mean(
+				tf.minimum(self.theta[:,0], 0.2) + tf.minimum(self.theta[:,4], 0.2))
+
 			### build reconstructor (decoder)
 			self.i_layer = self.build_rec(self.g_layer, self.train_phase)
 
@@ -242,7 +265,10 @@ class Condet:
 			##	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.co_dim)]), axis=1)
 
 			### g loss combination
-			self.g_loss_total = self.g_loss_mean #+ \
+			self.g_loss_total = self.g_loss_mean + \
+				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
+				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
+				self.stn_scale_loss_weight * self.stn_scale_loss
 				#self.rec_loss_weight * self.rec_loss_mean + \
 				#self.r_att_loss_weight * self.r_att_loss
 
@@ -379,7 +405,8 @@ class Condet:
 			z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
 			theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
 			print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
-			theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
+			#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
+			theta = tf.concat([-sh, z, th, z, -sw, tw], axis=1) + theta_init
 			print '>>> Theta shape: ', theta.get_shape().as_list()
 
 			### stn net
@@ -402,7 +429,7 @@ class Condet:
 
 	def step(self, im_data, co_data=None, gen_update=False, 
 		gen_only=False, disc_only=False, stats_only=False, 
-		att_only_co=False, att_only_im=False):
+		att_only_co=False, att_only_im=False, penalty_weight=1.0):
 
 		if stats_only:
 			res_list = [self.nan_vars, self.inf_vars, self.zero_vars, self.big_vars]
@@ -449,7 +476,8 @@ class Condet:
 			return res_list[0].flatten(), 0., 0.
 
 		### run one training step on discriminator, otherwise on generator, and log **g_num**
-		feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: True}
+		feed_dict = {self.co_input: co_data, self.im_input: im_data, 
+					self.penalty_weight: penalty_weight, self.train_phase: True}
 		if not gen_update:
 			res_list = [self.g_layer, self.summary, self.d_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)

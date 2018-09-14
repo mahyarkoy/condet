@@ -650,7 +650,8 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 
 			### generator updates: g_updates times for each d_updates of discriminator
 			elif g_updates > 0:
-				batch_sum, batch_g_data = condet.step(batch_im, batch_co, gen_update=True)
+				pw = 0.9 ** (itr_total // 1000)
+				batch_sum, batch_g_data = condet.step(batch_im, batch_co, gen_update=True, penalty_weight=pw)
 				condet.write_sum(batch_sum, itr_total)
 				g_itr += 1
 				itr_total += 1
