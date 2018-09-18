@@ -10,3 +10,5 @@ do
 	python run_condet.py -l $fname/run_$i -e $eval_step -s $i
 done
 cp -r $fname $target
+cp run_condet.py $target
+cp tf_condet.py $target

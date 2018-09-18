@@ -79,14 +79,21 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	im_bg = np.random.uniform(size=(sample_size,)+im_size)
 
 	### generate random bounding boxes with mnist digits
-	top_rand = np.random.randint(im_size[0]-co_size[0], size=sample_size)
-	left_rand = np.random.randint(im_size[1]-co_size[1], size=sample_size)
 	im_bboxes = list()
 	for i in range(sample_size):
-		im_bg[i, top_rand[i]:top_rand[i]+co_size[0], left_rand[i]:left_rand[i]+co_size[1], ...] = \
-			co_data[i%sample_size, ...]
+		hs = np.random.choice([1, 2])
+		ws = np.random.choice([1, 2])
+		#hs = np.random.uniform(1., 2.)
+		#ws = np.random.uniform(1., 2.)
+		co_re = resize(co_data[i%sample_size, ...], (co_size[0]//hs, co_size[1]//ws), 
+			anti_aliasing=True, preserve_range=True)
+		co_re_size = co_re.shape
+		top_rand = np.random.randint(im_size[0]-co_re_size[0])
+		left_rand = np.random.randint(im_size[1]-co_re_size[1])
+
+		im_bg[i, top_rand:top_rand+co_re_size[0], left_rand:left_rand+co_re_size[1], ...] = co_re
 		im_bboxes.append(np.array(
-			[left_rand[i], top_rand[i], left_rand[i]+co_size[1]-1, top_rand[i]+co_size[0]-1]).reshape(1,4))
+			[left_rand, top_rand, left_rand+co_re_size[1]-1, top_rand+co_re_size[0]-1]).reshape(1,4))
 	return im_bboxes, im_bg
 
 '''
@@ -546,7 +553,7 @@ co_data: content images
 im_data: input images
 im_bboxes: bounding boxes for each input image (list where each element row wise matrix of bbox coordinates)
 '''
-def train_condet(condet, im_data, co_data, im_bbox, labels=None):
+def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=None):
 	### dataset definition
 	train_size = im_data.shape[0]
 
@@ -563,6 +570,7 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 	d_r_logs = list()
 	d_g_logs = list()
 	eval_logs = list()
+	eval_t_logs = list()
 	stats_logs = list()
 	itrs_logs = list()
 	norms_logs = list()
@@ -611,8 +619,10 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 				draw_path = log_path_draw+'/sample_%d.png' % itr_total if itr_total % draw_step == 0 \
 					else None
 				iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path)
+				iou_mean_t, iou_std_t, _ = eval_condet(condet, test_im, test_bbox)
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
 				eval_logs.append([iou_mean, iou_std])
+				eval_t_logs.append([iou_mean_t, iou_std_t])
 				stats_logs.append(net_stats)
 				itrs_logs.append(itr_total)
 
@@ -667,6 +677,7 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 		if len(eval_logs) < 2:
 			continue
 		eval_logs_mat = np.array(eval_logs)
+		eval_t_logs_mat = np.array(eval_t_logs)
 		stats_logs_mat = np.array(stats_logs)
 		norms_logs_mat = np.array(norms_logs)
 		att_grad_mean_mat = np.array(att_grad_mean_logs)
@@ -684,12 +695,30 @@ def train_condet(condet, im_data, co_data, im_bbox, labels=None):
 		ax.plot(itrs_logs, eval_logs_mat[:,0], color='b', label='mean_iou')
 		ax.plot(itrs_logs, eval_logs_mat[:,0]+eval_logs_mat[:,1], color='b', linestyle='--')
 		ax.plot(itrs_logs, eval_logs_mat[:,0]-eval_logs_mat[:,1], color='b', linestyle='--')
+		ax.set_ylim(bottom=0.0, top=1.0)
+		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
 		ax.grid(True, which='both', linestyle='dotted')
 		ax.set_title('Mean IOU')
 		ax.set_xlabel('Iterations')
 		ax.set_ylabel('Values')
 		ax.legend(loc=0)
-		fig.savefig(log_path+'/mean_iou.png', dpi=300)
+		fig.savefig(log_path+'/mean_iou_train.png', dpi=300)
+		plt.close(fig)
+
+		### plot IOU test
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		ax.plot(itrs_logs, eval_t_logs_mat[:,0], color='b', label='mean_iou')
+		ax.plot(itrs_logs, eval_t_logs_mat[:,0]+eval_t_logs_mat[:,1], color='b', linestyle='--')
+		ax.plot(itrs_logs, eval_t_logs_mat[:,0]-eval_t_logs_mat[:,1], color='b', linestyle='--')
+		ax.set_ylim(bottom=0.0, top=1.0)
+		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Mean IOU Test')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/mean_iou_test.png', dpi=300)
 		plt.close(fig)
 
 		### plot norms
@@ -921,7 +950,7 @@ if __name__ == '__main__':
 	GAN SETUP SECTION
 	'''
 	### train condet
-	train_condet(condet, train_im, train_co, train_bbox)
+	train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
 
 	### load condet
 	# condet.load(condet_path % run_seed)
