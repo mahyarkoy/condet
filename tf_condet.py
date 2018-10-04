@@ -33,6 +33,7 @@ def conv2d_tr(input_, output_dim,
 		   scope="conv2d_tr", reuse=False, 
 		   padding='same', use_bias=True, trainable=True):
     
+    k_init = tf.truncated_normal_initializer(stddev=0.02)
     conv_tr = tf.layers.conv2d_transpose(
             input_, output_dim, [k_h, k_w], strides=[d_h, d_w], 
             padding=padding, use_bias=use_bias, 
@@ -105,17 +106,17 @@ class Condet:
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
 			self.penalty_weight = tf.placeholder(tf_dtype, name='penalty_weight')
 
-			### build generator (encoder)
+			### build generators (encoder)
 			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
-			self.g_layer = self.im_input
+			#self.g_layer = self.im_input
 
 			### theta decay updates
 			self.theta_decay = tf.get_variable('theta_decay', dtype=tf_dtype, initializer=.0)
 			self.theta_decay_opt = tf.assign(self.theta_decay, self.theta_decay * 0.999)
 
 			### build stn
-			self.g_layer_stn, self.theta = self.build_stn(self.g_layer, self.train_phase)
-			print '>>> STN shape: ', self.g_layer_stn.get_shape().as_list()
+			self.stn_layer, self.theta = self.build_stn(self.im_input, self.train_phase)
+			print '>>> STN shape: ', self.stn_layer.get_shape().as_list()
 
 			### stn init penalty
 			self.stn_init_loss = tf.reduce_mean(
@@ -135,12 +136,19 @@ class Condet:
 			self.stn_scale_loss = -tf.reduce_mean(
 				tf.minimum(self.theta[:,0], 0.2) + tf.minimum(self.theta[:,4], 0.2))
 
-			### build reconstructor (decoder)
-			self.i_layer = self.build_rec(self.g_layer, self.train_phase)
+			### build generators (encoders)
+			self.im_g_layer = self.build_gen(self.stn_layer, self.train_phase, 'im_gen')
+			self.co_g_layer = self.build_gen(self.co_input, self.train_phase, 'co_gen', share=True)
 
-			### build batch discriminator (critic)
-			self.r_logits, self.r_hidden = self.build_dis(self.co_input, self.train_phase)
-			self.g_logits, self.g_hidden = self.build_dis(self.g_layer_stn, self.train_phase, reuse=True)
+			### use reconstructors (decoders)
+			self.im_rec_layer = self.build_gen(self.im_g_layer, self.train_phase, 'co_gen', share=True, reuse=True)
+			self.co_rec_layer = self.build_gen(self.co_g_layer, self.train_phase, 'im_gen', share=True, reuse=True)
+
+			### build discriminator (critic)
+			self.co_r_logits, self.co_r_hidden = self.build_dis(self.co_input, self.train_phase, 'co_dis')
+			self.co_g_logits, self.co_g_hidden = self.build_dis(self.im_g_layer, self.train_phase, 'co_dis', reuse=True)
+			self.im_r_logits, self.im_r_hidden = self.build_dis(self.stn_layer, self.train_phase, 'im_dis')
+			self.im_g_logits, self.im_g_hidden = self.build_dis(self.co_g_layer, self.train_phase, 'im_dis', reuse=True)
 
 			### build batch attention, shape: (B, k, k, 1)
 			#self.r_att = self.build_att(self.r_hidden, self.train_phase)
@@ -173,78 +181,36 @@ class Condet:
 			##self.g_att = g_att_gt
 
 			### real gen manifold interpolation
-			int_rand = tf.random_uniform([tf.shape(self.g_layer)[0]], minval=0.0, maxval=1.0, dtype=tf_dtype)
+			int_rand = tf.random_uniform([tf.shape(self.im_g_layer)[0]], minval=0.0, maxval=1.0, dtype=tf_dtype)
 			int_rand = tf.reshape(int_rand, [-1, 1, 1, 1])
-			#top_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[1]-tf.shape(self.co_input)[1], dtype=tf.int32)
-			#left_rand = tf.random_uniform([1], maxval=tf.shape(self.g_layer)[2]-tf.shape(self.co_input)[2], dtype=tf.int32)
-			#g_layer_crop = tf.image.crop_to_bounding_box(self.g_layer, offset_height=top_rand[0], offset_width=left_rand[0], 
-			#	target_height=tf.shape(self.co_input)[1], target_width=tf.shape(self.co_input)[2])
-			
-			rg_layer = (1.0 - int_rand) * self.g_layer_stn + int_rand * self.co_input
-			#rg_layer = self.co_input + tf.random_normal(tf.shape(self.co_input), stddev=0.1)
-			self.rg_logits, _ = self.build_dis(rg_layer, self.train_phase, reuse=True)
-			#self.rg_logits = tf.reduce_sum(self.rg_logits * r_att_gt, axis=[1,2,3])
+			co_rg_layer = (1.0 - int_rand) * self.im_g_layer + int_rand * self.co_input
+			co_rg_logits, _ = self.build_dis(co_rg_layer, self.train_phase, 'co_dis', reuse=True)
+			im_rg_layer = (1.0 - int_rand) * self.co_g_layer + int_rand * self.stn_layer
+			im_rg_logits, _ = self.build_dis(im_rg_layer, self.train_phase, 'im_dis', reuse=True)
 
 			### build d losses
-			if self.d_loss_type == 'log':
-				self.d_r_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-						logits=self.r_logits, labels=tf.ones_like(self.r_logits, tf_dtype))
-				self.d_g_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-						logits=self.g_logits, labels=tf.zeros_like(self.g_logits, tf_dtype))
-				self.d_rg_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-						logits=self.rg_logits, labels=tf.ones_like(self.rg_logits, tf_dtype))
-			elif self.d_loss_type == 'was':
-				self.d_r_loss = -self.r_logits 
-				self.d_g_loss = self.g_logits
-				self.d_rg_loss = -self.rg_logits
-			else:
-				raise ValueError('>>> d_loss_type: %s is not defined!' % self.d_loss_type)
-			print '>>> d_r_loss shape: ', self.d_r_loss.get_shape().as_list()
-			print '>>> d_g_loss shape: ', self.d_g_loss.get_shape().as_list()
+			self.co_d_r_loss, self.co_d_g_loss, self.co_gp_loss, self.co_grad_norm = \
+				self.build_dis_loss(self.co_r_logits, self.co_g_logits, co_rg_logits, co_rg_layer)
 
-			### gradient penalty
-			### NaN free norm gradient
-			rg_grad = tf.gradients(self.rg_logits, rg_layer)
-			rg_grad_flat = tf.contrib.layers.flatten(rg_grad[0])
-			rg_grad_ok = tf.reduce_sum(tf.square(rg_grad_flat), axis=1) > 1.
-			rg_grad_safe = tf.where(rg_grad_ok, rg_grad_flat, tf.ones_like(rg_grad_flat))
-			#rg_grad_abs = tf.where(rg_grad_flat >= 0., rg_grad_flat, -rg_grad_flat)
-			rg_grad_abs =  0. * rg_grad_flat
-			rg_grad_norm = tf.where(rg_grad_ok, 
-				tf.norm(rg_grad_safe, axis=1), tf.reduce_sum(rg_grad_abs, axis=1))
-			gp_loss = tf.square(rg_grad_norm - 1.0)
-			### for logging
-			self.rg_grad_norm_output = tf.norm(rg_grad_flat, axis=1)
-			
-			### d loss combination **weighted**
-			#self.d_loss_mean = tf.reduce_mean(
-			#	tf.reduce_sum(r_att_gt * self.d_r_loss, axis=[1,2,3]) + \
-			#	tf.reduce_sum(tf.stop_gradient(self.g_att) * self.d_g_loss, axis=[1,2,3]))
+			self.im_d_r_loss, self.im_d_g_loss, self.im_gp_loss, self.im_grad_norm = \
+				self.build_dis_loss(self.im_r_logits, self.im_g_logits, im_rg_logits, im_rg_layer)
 
 			### d loss simple (no batch)
-			self.d_loss_mean = tf.reduce_mean(self.d_r_loss + self.d_g_loss)
+			self.co_d_loss_mean = tf.reduce_mean(self.co_d_r_loss + self.co_d_g_loss) + \
+				self.gp_loss_weight * tf.reduce_mean(self.co_gp_loss)
 
-			self.d_loss_total = self.d_loss_mean + \
-				self.gp_loss_weight * tf.reduce_mean(gp_loss) ## enforcing gp everywhere
+			self.im_d_loss_mean = tf.reduce_mean(self.im_d_r_loss + self.im_d_g_loss) + \
+				self.gp_loss_weight * tf.reduce_mean(self.im_gp_loss)
+
+			self.d_loss_total = self.co_d_loss_mean + self.im_d_loss_mean
 
 			### build g loss
-			if self.g_loss_type == 'log':
-				self.g_loss = -tf.nn.sigmoid_cross_entropy_with_logits(
-					logits=self.g_logits, labels=tf.zeros_like(self.g_logits, tf_dtype))
-			elif self.g_loss_type == 'mod':
-				self.g_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-					logits=self.g_logits, labels=tf.ones_like(self.g_logits, tf_dtype))
-			elif self.g_loss_type == 'was':
-				self.g_loss = -self.g_logits
-			else:
-				raise ValueError('>>> g_loss_type: %s is not defined!' % self.g_loss_type)
-
-			### g loss mean **weighted**
-			#self.g_loss_mean = tf.reduce_mean(
-			#	tf.reduce_sum(self.g_att * self.g_loss, axis=[1,2,3]), axis=None)
+			self.co_g_loss, self.im_rec_loss = self.build_gen_loss(self.co_g_logits, self.stn_layer, self.im_rec_layer)
+			self.im_g_loss, self.co_rec_loss = self.build_gen_loss(self.im_g_logits, self.co_input, self.co_rec_layer)
 
 			### g loss mean simple (no batch)
-			self.g_loss_mean = tf.reduce_mean(self.g_loss)
+			self.co_g_loss_mean = tf.reduce_mean(self.co_g_loss) + self.im_rec_loss
+			self.im_g_loss_mean = tf.reduce_mean(self.im_g_loss) + self.im_rec_loss
 
 			### g_att and grad logs
 			#g_att_grad = tf.gradients(self.g_loss_mean, self.g_att)
@@ -265,12 +231,11 @@ class Condet:
 			##	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.co_dim)]), axis=1)
 
 			### g loss combination
-			self.g_loss_total = self.g_loss_mean + \
+			self.g_loss_total = self.co_g_loss_mean + self.im_g_loss_mean + \
 				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
-				self.stn_scale_loss_weight * self.stn_scale_loss
-				#self.rec_loss_weight * self.rec_loss_mean + \
-				#self.r_att_loss_weight * self.r_att_loss
+				self.stn_scale_loss_weight * self.stn_scale_loss + \
+				self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss)
 
 			### collect params
 			self.g_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "g_net")
@@ -324,7 +289,7 @@ class Condet:
 				with tf.control_dependencies([self.theta_decay_opt]):
 					self.g_opt = tf.train.AdamOptimizer(
 						self.g_lr, beta1=self.g_beta1, beta2=self.g_beta2).minimize(
-						self.g_loss_total, var_list=self.g_vars+self.s_vars+self.i_vars)
+						self.g_loss_total, var_list=self.g_vars+self.s_vars)
 				#self.a_opt = tf.train.AdamOptimizer(
 				#	self.a_lr, beta1=self.a_beta1, beta2=self.a_beta2).minimize(
 				#	self.g_loss_total, var_list=self.a_vars)
@@ -333,20 +298,83 @@ class Condet:
 				#	self.rec_loss, var_list=self.i_vars)
 
 			### summaries **g_num**
-			g_loss_sum = tf.summary.scalar("g_loss", self.g_loss_mean)
-			d_loss_sum = tf.summary.scalar("d_loss", self.d_loss_mean)
-			#rec_loss_sum = tf.summary.scalar("rec_loss", self.rec_loss_mean)
-			#r_att_loss_sum = tf.summary.scalar("r_att_loss", self.r_att_loss)
-			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum])
+			co_g_loss_sum = tf.summary.scalar("co_g_loss", self.co_g_loss_mean)
+			co_d_loss_sum = tf.summary.scalar("co_d_loss", self.co_d_loss_mean)
+			im_g_loss_sum = tf.summary.scalar("im_g_loss", self.im_g_loss_mean)
+			im_d_loss_sum = tf.summary.scalar("im_d_loss", self.im_d_loss_mean)
+			co_rec_loss_sum = tf.summary.scalar("co_rec_loss", self.co_rec_loss)
+			im_rec_loss_sum = tf.summary.scalar("im_rec_loss", self.im_rec_loss)
+			g_loss_sum = tf.summary.scalar("g_loss_total", self.g_loss_total)
+			d_loss_sum = tf.summary.scalar("d_loss_total", self.d_loss_total)
+			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, co_g_loss_sum, co_d_loss_sum, 
+				im_g_loss_sum, im_d_loss_sum, co_rec_loss_sum, im_rec_loss_sum])
 
-	def build_gen(self, z, train_phase):
+	def build_dis_loss(self, r_logits, g_logits, rg_logits, rg_layer):
+		### build d losses
+		if self.d_loss_type == 'log':
+			d_r_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+					logits=r_logits, labels=tf.ones_like(r_logits, tf_dtype))
+			d_g_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+					logits=g_logits, labels=tf.zeros_like(g_logits, tf_dtype))
+			d_rg_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+					logits=rg_logits, labels=tf.ones_like(rg_logits, tf_dtype))
+		elif self.d_loss_type == 'was':
+			d_r_loss = -r_logits 
+			d_g_loss = g_logits
+			d_rg_loss = -rg_logits
+		else:
+			raise ValueError('>>> d_loss_type: %s is not defined!' % self.d_loss_type)
+		print '>>> d_r_loss shape: ', d_r_loss.get_shape().as_list()
+		print '>>> d_g_loss shape: ', d_g_loss.get_shape().as_list()
+
+		### gradient penalty
+		### NaN free norm gradient
+		rg_grad = tf.gradients(rg_logits, rg_layer)
+		rg_grad_flat = tf.contrib.layers.flatten(rg_grad[0])
+		rg_grad_ok = tf.reduce_sum(tf.square(rg_grad_flat), axis=1) > 1.
+		rg_grad_safe = tf.where(rg_grad_ok, rg_grad_flat, tf.ones_like(rg_grad_flat))
+		#rg_grad_abs = tf.where(rg_grad_flat >= 0., rg_grad_flat, -rg_grad_flat)
+		rg_grad_abs =  0. * rg_grad_flat
+		rg_grad_norm = tf.where(rg_grad_ok, 
+			tf.norm(rg_grad_safe, axis=1), tf.reduce_sum(rg_grad_abs, axis=1))
+		gp_loss = tf.square(rg_grad_norm - 1.0)
+		### for logging
+		rg_grad_norm_output = tf.norm(rg_grad_flat, axis=1)
+
+		return d_r_loss, d_g_loss, gp_loss, rg_grad_norm_output
+
+	def build_gen_loss(self, g_logits, data_layer, rec_layer):
+		if self.g_loss_type == 'log':
+				g_loss = -tf.nn.sigmoid_cross_entropy_with_logits(
+					logits=g_logits, labels=tf.zeros_like(g_logits, tf_dtype))
+		elif self.g_loss_type == 'mod':
+			g_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+				logits=g_logits, labels=tf.ones_like(g_logits, tf_dtype))
+		elif self.g_loss_type == 'was':
+			g_loss = -g_logits
+		else:
+			raise ValueError('>>> g_loss_type: %s is not defined!' % self.g_loss_type)
+		
+		rec_loss = tf.reduce_mean(
+			tf.reduce_sum(tf.square(data_layer - rec_layer), axis=[1,2,3]))
+
+		return g_loss, rec_loss
+
+	def build_gen(self, z, train_phase, scope, reuse=False, share=False):
 		act = self.g_act
 		bn = tf.contrib.layers.batch_norm
+		im_size = self.co_dim[0]
+		batch_size = tf.shape(z)[0]
+		### shared
 		with tf.variable_scope('g_net'):
-			h1 = act(conv2d(z, 32, scope='conv1'))
-			h2 = act(bn(conv2d(h1, 32, scope='conv2'), is_training=train_phase))
-			h3 = conv2d(h2, 3, scope='conv3')
-			o = tf.tanh(h3)
+			with tf.variable_scope('shared', reuse=share):
+				h1 = act(bn(conv2d(z, 64, d_h=2, d_w=2, scope='conv1'), is_training=True))
+				h2 = act(bn(conv2d(h1, 32, d_h=2, d_w=2, scope='conv2'), is_training=True))
+
+			with tf.variable_scope(scope, reuse=reuse):
+				h1_tr = act(bn(conv2d_tr(h2, 64, d_h=2, d_w=2, scope='conv1_tr'), is_training=train_phase))
+				h2_tr = conv2d_tr(h1_tr, self.co_dim[-1], d_h=2, d_w=2, scope='conv2_tr')
+				o = tf.tanh(h2_tr)
 		return o
 
 	def build_rec(self, x, train_phase):
@@ -359,18 +387,19 @@ class Condet:
 			o = tf.tanh(h3)
 		return o
 
-	def build_dis(self, data_layer, train_phase, reuse=False):
+	def build_dis(self, data_layer, train_phase, scope, reuse=False):
 		act = self.d_act
 		bn = tf.contrib.layers.batch_norm
 		ln = tf.contrib.layers.layer_norm
 		with tf.variable_scope('d_net'):
-			### encoding the 64*64*3 image with conv into 8*8*1
-			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
-			h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
-			flat = tf.contrib.layers.flatten(h3)
-			o = dense(flat, 1, 'fco', reuse=reuse)
-			#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
+			with tf.variable_scope(scope):
+				### encoding the 64*64*3 image with conv into 8*8*1
+				h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+				h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
+				h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
+				flat = tf.contrib.layers.flatten(h3)
+				o = dense(flat, 1, 'fco', reuse=reuse)
+				#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
 		return o, h3
 
 	def build_att(self, hidden_layer, train_phase, reuse=False):
@@ -456,21 +485,28 @@ class Condet:
 		### only forward stn on im_data using im_input
 		if att_only_im:
 			feed_dict = {self.im_input: im_data, self.train_phase: False}
-			res_list = [self.g_layer, self.i_layer, self.g_layer_stn, self.theta]
+			res_list = [self.im_g_layer, self.im_rec_layer, self.stn_layer, self.theta]
+			res_list = self.sess.run(res_list, feed_dict=feed_dict)
+			return res_list
+
+		### only forward generator on co_data using im_input
+		if att_only_co:
+			feed_dict = {self.co_input: im_data, self.train_phase: False}
+			res_list = [self.co_g_layer, self.co_rec_layer]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			return res_list
 
 		### only forward generator on im_data
 		if gen_only:
 			feed_dict = {self.im_input: im_data, self.train_phase: False}
-			g_layer = self.sess.run(self.g_layer, feed_dict=feed_dict)
+			g_layer = self.sess.run(self.im_g_layer, feed_dict=feed_dict)
 			return g_layer
 
 		### only forward discriminator to compute norms
 		if disc_only:
 			feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: False}
 			#res_list = [self.rg_grad_norm_output, self.d_r_loss_mean_sep, self.g_loss_mean_sep]
-			res_list = [self.rg_grad_norm_output]
+			res_list = [(self.co_grad_norm + self.im_grad_norm) / 2.]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			#return res_list[0].flatten(), res_list[1].flatten(), res_list[2].flatten()
 			return res_list[0].flatten(), 0., 0.
@@ -479,10 +515,10 @@ class Condet:
 		feed_dict = {self.co_input: co_data, self.im_input: im_data, 
 					self.penalty_weight: penalty_weight, self.train_phase: True}
 		if not gen_update:
-			res_list = [self.g_layer, self.summary, self.d_opt]
+			res_list = [self.im_g_layer, self.summary, self.d_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 		else:
-			res_list = [self.g_layer, self.summary, self.g_opt]
+			res_list = [self.im_g_layer, self.summary, self.g_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 		
 		### return summary and g_layer

@@ -132,6 +132,12 @@ def prep_mnist(im_input, co_size=(32, 32, 3)):
 	bboxes, im_data = make_rand_bg(co_data)
 	return bboxes, im_data * 2. - 1., co_data * 2. - 1.
 
+def prep_svhn(co_data):
+	co_data_re = (co_data + 1.0) / 2.0
+	### put co_data on random background
+	bboxes, im_data = make_rand_bg(co_data_re)
+	return bboxes, im_data * 2. - 1.
+
 '''
 Reads svhn_prep data from file and return (bboxes, data, names) in [-1,1].
 bboxes: a list where each item is a matrix corresponding to one images with (l, t, r, b) as rows
@@ -475,13 +481,24 @@ def draw_im_att(ims, bboxes, path, trans=None, recs=None, atts=None):
 	block_draw(im_mat, path, border=True)
 	return
 
+def draw_co(ims, trans, recs, path):
+	im_mat = np.stack([ims, trans, recs], axis=1)
+	block_draw(im_mat, path, border=True)
+	return
+
 def draw_im_stn(ims, bboxes, path, trans, recs, stn_bbox, stn_im):
 	ims_bb = draw_bbox(ims, bboxes)
 	ims_stn_bb = draw_bbox(ims, stn_bbox)
 	stn_im_re = np.zeros(ims.shape)
+	recs_re = np.zeros(ims.shape)
+	trans_re = np.zeros(ims.shape)
 	for i in range(ims.shape[0]):
 		stn_im_re[i, ...] = resize(stn_im[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
-	im_mat = np.stack([ims_bb, ims_stn_bb, stn_im_re, recs, trans], axis=1)
+	for i in range(ims.shape[0]):
+		recs_re[i, ...] = resize(recs[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
+	for i in range(ims.shape[0]):
+		trans_re[i, ...] = resize(trans[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
+	im_mat = np.stack([ims_bb, ims_stn_bb, stn_im_re, trans_re, recs_re], axis=1)
 	block_draw(im_mat, path, border=True)
 	return
 
@@ -610,15 +627,15 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 			co_batch_end = co_batch_start + batch_len
 			if co_batch_end > co_size:
 				co_batch_start = 0
-				batch_end = batch_len
+				co_batch_end = batch_len
 			batch_co = train_co[co_batch_start:co_batch_end, ...]
 			co_batch_start += batch_len
 		
 			### evaluate energy distance between real and gen distributions
 			if itr_total % eval_step == 0:
-				draw_path = log_path_draw+'/sample_%d.png' % itr_total if itr_total % draw_step == 0 \
+				draw_path = log_path_draw+'/sample_%d' % itr_total if itr_total % draw_step == 0 \
 					else None
-				iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path)
+				iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path, co_data)
 				iou_mean_t, iou_std_t, _ = eval_condet(condet, test_im, test_bbox)
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
 				eval_logs.append([iou_mean, iou_std])
@@ -776,8 +793,8 @@ if att_co is false, im_data passes through the gen transformation.
 def condet_att(condet, im_data, batch_size=64, att_co=False):
 	#im_att = np.zeros(im_data.shape[:3]+(1,))
 	im_att = np.zeros([im_data.shape[0]]+condet.co_dim)
-	im_trans = np.zeros(im_data.shape)
-	im_rec = np.zeros(im_data.shape)
+	im_trans = np.zeros([im_data.shape[0]]+condet.co_dim)
+	im_rec = np.zeros([im_data.shape[0]]+condet.co_dim)
 	im_theta = np.zeros([im_data.shape[0], 6])
 	for batch_start in range(0, im_data.shape[0], batch_size):
 		batch_end = batch_start + batch_size
@@ -787,7 +804,7 @@ def condet_att(condet, im_data, batch_size=64, att_co=False):
 			im_att[batch_start:batch_end, ...], im_theta[batch_start:batch_end, ...] = \
 				condet.step(batch_im, att_only_im=True)
 		else:
-			im_att[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
+			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
 	return im_trans, im_rec, im_att, im_theta
 
 '''
@@ -795,6 +812,7 @@ Generate transformation.
 '''
 def condet_trans(condet, im_data, batch_size=64):
 	im_trans = np.zeros(im_data.shape)
+	sample_size = im_data.shape[0]
 	for batch_start in range(0, sample_size, batch_size):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
@@ -844,7 +862,7 @@ def bbox_to_att(bboxes, im_size):
 '''
 Returns intersection over union mean and std, net_stats, and draw_im_att
 '''
-def eval_condet(condet, im_data, bboxes, draw_path=None, sample_size=1000):
+def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000):
 	### sample and batch size
 	batch_size = 64
 	draw_size = 20
@@ -857,9 +875,13 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, sample_size=1000):
 
 	### draw block image of gen samples
 	if draw_path is not None:
-		draw_im_stn(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
+		draw_im_stn(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path+'_im.png', 
 			g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], 
 			g_stn_bbox[0:draw_size], g_att[0:draw_size, ...])
+		if co_data is not None:
+			co_samples = co_data[0:draw_size, ...]
+			co_g_samples, co_rec, _, _ = condet_att(condet, co_samples, att_co=True)
+			draw_co(co_samples, co_g_samples, co_rec, draw_path+'_co.png')
 		#draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
 		#	g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
 
@@ -897,23 +919,32 @@ if __name__ == '__main__':
 	test_bbox, test_im, test_names = read_svhn_prep(svhn_test_path)
 	print '>>> INPUT TRAIN SIZE:', train_im.shape
 	print '>>> INPUT TEST SIZE:', test_im.shape
-
+	'''
 	### svhn_cut (as content images)
 	svhn_32_train = '/media/evl/Public/Mahyar/Data/svhn/train_32x32.mat'
 	svhn_32_test = '/media/evl/Public/Mahyar/Data/svhn/test_32x32.mat'
-	train_co, train_co_labs = read_svhn_32(svhn_32_train)
-	test_co, test_co_labs = read_svhn_32(svhn_32_test)
-	print '>>> CONTENT TRAIN SIZE:', train_co.shape
-	print '>>> CONTENT TEST SIZE:', test_co.shape
-	'''
+	svhn_train_co, svhn_train_co_labs = read_svhn_32(svhn_32_train)
+	svhn_test_co, svhn_test_co_labs = read_svhn_32(svhn_32_test)
+	svhn_train_bbox, svhn_train_im = prep_svhn(svhn_train_co)
+	svhn_test_bbox, svhn_test_im = prep_svhn(svhn_test_co)
+	print '>>> SVHN TRAIN SIZE:', svhn_train_co.shape
+	print '>>> SVHN TEST SIZE:', svhn_test_co.shape
 
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
-	train_data, val_data, test_data = read_mnist(mnist_path)
-	train_bbox, train_im, train_co = prep_mnist(train_data[0])
-	test_bbox, test_im, test_co = prep_mnist(test_data[0])
-	print '>>> INPUT TRAIN SIZE:', train_im.shape
-	print '>>> INPUT TEST SIZE:', test_im.shape
+	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
+	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
+	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
+	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
+	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
+
+	### dataset choice
+	train_im = svhn_train_im
+	train_bbox = svhn_train_bbox
+	test_im = svhn_test_im
+	test_bbox = svhn_test_bbox
+	train_co = mnist_train_co
+	test_co = mnist_test_co
 
 	'''
 	TENSORFLOW SETUP
