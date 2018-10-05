@@ -78,7 +78,8 @@ class Condet:
 		self.co_dim = [32, 32, 3]
 		self.stn_size = self.co_dim[:2] ### co_dim
 		self.gp_loss_weight = 10.0
-		self.rec_loss_weight = 0.0
+		self.rec_loss_weight = 0.1
+		self.g_init_loss_weight = 1.0
 		self.r_att_loss_weight = 0.0
 		self.stn_init_loss_weight = 10.0
 		self.stn_boundary_loss_weight = 10.0
@@ -104,7 +105,9 @@ class Condet:
 			self.im_input = tf.placeholder(tf_dtype, [None]+self.data_dim, name='im_input')
 			self.co_input = tf.placeholder(tf_dtype, [None]+self.co_dim, name='co_input')
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
-			self.penalty_weight = tf.placeholder(tf_dtype, name='penalty_weight')
+			self.run_count = tf.placeholder(tf_dtype, name='run_count')
+			self.penalty_weight = tf.pow(0.9, self.run_count)
+			self.g_init_penalty_weight = tf.pow(0.95, self.run_count)
 
 			### build generators (encoder)
 			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
@@ -147,7 +150,7 @@ class Condet:
 			### build discriminator (critic)
 			self.co_r_logits, self.co_r_hidden = self.build_dis(self.co_input, self.train_phase, 'co_dis')
 			self.co_g_logits, self.co_g_hidden = self.build_dis(self.im_g_layer, self.train_phase, 'co_dis', reuse=True)
-			self.im_r_logits, self.im_r_hidden = self.build_dis(self.stn_layer, self.train_phase, 'im_dis')
+			self.im_r_logits, self.im_r_hidden = self.build_dis(tf.stop_gradient(self.stn_layer), self.train_phase, 'im_dis')
 			self.im_g_logits, self.im_g_hidden = self.build_dis(self.co_g_layer, self.train_phase, 'im_dis', reuse=True)
 
 			### build batch attention, shape: (B, k, k, 1)
@@ -204,9 +207,11 @@ class Condet:
 
 			self.d_loss_total = self.co_d_loss_mean + self.im_d_loss_mean
 
-			### build g loss
-			self.co_g_loss, self.im_rec_loss = self.build_gen_loss(self.co_g_logits, self.stn_layer, self.im_rec_layer)
-			self.im_g_loss, self.co_rec_loss = self.build_gen_loss(self.im_g_logits, self.co_input, self.co_rec_layer)
+			### build g loss and rec losses
+			self.co_g_loss, self.co_rec_loss, self.co_g_init_loss = self.build_gen_loss(self.co_g_logits, 
+				self.co_input, self.co_g_layer, self.co_rec_layer)
+			self.im_g_loss, self.im_rec_loss, self.im_g_init_loss = self.build_gen_loss(self.im_g_logits, 
+				self.stn_layer, self.im_g_layer, self.im_rec_layer)
 
 			### g loss mean simple (no batch)
 			self.co_g_loss_mean = tf.reduce_mean(self.co_g_loss) + self.im_rec_loss
@@ -235,7 +240,8 @@ class Condet:
 				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
 				self.stn_scale_loss_weight * self.stn_scale_loss + \
-				self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss)
+				self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss) + \
+				self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)
 
 			### collect params
 			self.g_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "g_net")
@@ -343,7 +349,7 @@ class Condet:
 
 		return d_r_loss, d_g_loss, gp_loss, rg_grad_norm_output
 
-	def build_gen_loss(self, g_logits, data_layer, rec_layer):
+	def build_gen_loss(self, g_logits, data_layer, g_layer, rec_layer):
 		if self.g_loss_type == 'log':
 				g_loss = -tf.nn.sigmoid_cross_entropy_with_logits(
 					logits=g_logits, labels=tf.zeros_like(g_logits, tf_dtype))
@@ -358,7 +364,10 @@ class Condet:
 		rec_loss = tf.reduce_mean(
 			tf.reduce_sum(tf.square(data_layer - rec_layer), axis=[1,2,3]))
 
-		return g_loss, rec_loss
+		init_loss = tf.reduce_mean(
+			tf.reduce_sum(tf.square(data_layer - g_layer), axis=[1,2,3]))
+
+		return g_loss, rec_loss, init_loss
 
 	def build_gen(self, z, train_phase, scope, reuse=False, share=False):
 		act = self.g_act
@@ -367,14 +376,26 @@ class Condet:
 		batch_size = tf.shape(z)[0]
 		### shared
 		with tf.variable_scope('g_net'):
-			with tf.variable_scope('shared', reuse=share):
-				h1 = act(bn(conv2d(z, 64, d_h=2, d_w=2, scope='conv1'), is_training=True))
-				h2 = act(bn(conv2d(h1, 32, d_h=2, d_w=2, scope='conv2'), is_training=True))
+			#with tf.variable_scope('shared', reuse=share):
+				#h1 = act(bn(conv2d(z, 64, d_h=2, d_w=2, scope='conv1'), is_training=True))
+				#h2 = act(bn(conv2d(h1, 32, d_h=2, d_w=2, scope='conv2'), is_training=True))
 
 			with tf.variable_scope(scope, reuse=reuse):
-				h1_tr = act(bn(conv2d_tr(h2, 64, d_h=2, d_w=2, scope='conv1_tr'), is_training=train_phase))
-				h2_tr = conv2d_tr(h1_tr, self.co_dim[-1], d_h=2, d_w=2, scope='conv2_tr')
-				o = tf.tanh(h2_tr)
+				#h1_tr = act(bn(conv2d_tr(h2, 64, d_h=2, d_w=2, scope='conv1_tr'), is_training=train_phase))
+				#h2_tr = conv2d_tr(h1_tr, self.co_dim[-1], d_h=2, d_w=2, scope='conv2_tr')
+				#o = tf.tanh(h2_tr)
+
+				### add some noise
+				z_n_dim = 2
+				z_n = tf.random_uniform([tf.shape(z)[0], tf.shape(z)[1], tf.shape(z)[2], z_n_dim], minval=-1.0, maxval=1.0, dtype=tf_dtype)
+				#z_n = tf.reshape(z_n, [tf.shape(z)[0], 1, 1, z_n_dim])
+				#z_n = tf.tile(z_n, [1, tf.shape(z)[1], tf.shape(z)[2], 1])
+				zc = tf.concat([z, z_n], axis=-1)
+				### transform
+				h1 = act(bn(conv2d(zc, 32, d_h=1, d_w=1, scope='conv1'), is_training=True))
+				#h2 = act(bn(conv2d(h1, 32, d_h=1, d_w=1, scope='conv2'), is_training=True))
+				h3 = conv2d(h1, self.co_dim[-1], d_h=1, d_w=1, scope='conv3')
+				o = tf.tanh(h3)
 		return o
 
 	def build_rec(self, x, train_phase):
@@ -458,7 +479,7 @@ class Condet:
 
 	def step(self, im_data, co_data=None, gen_update=False, 
 		gen_only=False, disc_only=False, stats_only=False, 
-		att_only_co=False, att_only_im=False, penalty_weight=1.0):
+		att_only_co=False, att_only_im=False, run_count=0.0):
 
 		if stats_only:
 			res_list = [self.nan_vars, self.inf_vars, self.zero_vars, self.big_vars]
@@ -513,7 +534,7 @@ class Condet:
 
 		### run one training step on discriminator, otherwise on generator, and log **g_num**
 		feed_dict = {self.co_input: co_data, self.im_input: im_data, 
-					self.penalty_weight: penalty_weight, self.train_phase: True}
+					self.run_count: run_count, self.train_phase: True}
 		if not gen_update:
 			res_list = [self.im_g_layer, self.summary, self.d_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
