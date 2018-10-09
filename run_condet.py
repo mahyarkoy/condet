@@ -939,10 +939,14 @@ if __name__ == '__main__':
 	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
 
 	### dataset choice
-	train_im = svhn_train_im
-	train_bbox = svhn_train_bbox
-	test_im = svhn_test_im
-	test_bbox = svhn_test_bbox
+	#train_im = svhn_train_im
+	#train_bbox = svhn_train_bbox
+	#test_im = svhn_test_im
+	#test_bbox = svhn_test_bbox
+	train_im = mnist_train_im
+	train_bbox = mnist_train_bbox
+	test_im = mnist_test_im
+	test_bbox = mnist_test_bbox
 	train_co = mnist_train_co
 	test_co = mnist_test_co
 

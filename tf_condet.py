@@ -70,20 +70,24 @@ class Condet:
 		self.d_beta1 = 0.5
 		self.d_beta2 = 0.5
 
-		### network parameters **g_num** **mt**
-		### >>> dataset sensitive: data_dim
+		### loss weights
+		self.gp_loss_weight = 10.0
+		self.rec_loss_weight = 0.0
+		self.g_init_loss_weight = 0.0
+
+		self.im_d_loss_weight = 0.0
+		self.use_gen = False
+
+		self.stn_init_loss_weight = 10.0
+		self.stn_boundary_loss_weight = 10.0
+		self.stn_scale_loss_weight = 1000.0
+
+		### network parameters
 		self.z_dim = 100
 		self.z_range = 1.0
 		self.data_dim = [64, 64, 3]
 		self.co_dim = [32, 32, 3]
 		self.stn_size = self.co_dim[:2] ### co_dim
-		self.gp_loss_weight = 10.0
-		self.rec_loss_weight = 0.1
-		self.g_init_loss_weight = 1.0
-		self.r_att_loss_weight = 0.0
-		self.stn_init_loss_weight = 10.0
-		self.stn_boundary_loss_weight = 10.0
-		self.stn_scale_loss_weight = 1000.0
 	
 		self.d_loss_type = 'was'
 		self.g_loss_type = 'was'
@@ -198,20 +202,20 @@ class Condet:
 			self.im_d_r_loss, self.im_d_g_loss, self.im_gp_loss, self.im_grad_norm = \
 				self.build_dis_loss(self.im_r_logits, self.im_g_logits, im_rg_logits, im_rg_layer)
 
-			### d loss simple (no batch)
+			### d loss mean simple (no batch)
 			self.co_d_loss_mean = tf.reduce_mean(self.co_d_r_loss + self.co_d_g_loss) + \
 				self.gp_loss_weight * tf.reduce_mean(self.co_gp_loss)
 
 			self.im_d_loss_mean = tf.reduce_mean(self.im_d_r_loss + self.im_d_g_loss) + \
 				self.gp_loss_weight * tf.reduce_mean(self.im_gp_loss)
 
-			self.d_loss_total = self.co_d_loss_mean + self.im_d_loss_mean
+			self.d_loss_total = self.co_d_loss_mean + self.im_d_loss_weight * self.im_d_loss_mean
 
 			### build g loss and rec losses
-			self.co_g_loss, self.co_rec_loss, self.co_g_init_loss = self.build_gen_loss(self.co_g_logits, 
-				self.co_input, self.co_g_layer, self.co_rec_layer)
-			self.im_g_loss, self.im_rec_loss, self.im_g_init_loss = self.build_gen_loss(self.im_g_logits, 
+			self.co_g_loss, self.im_rec_loss, self.im_g_init_loss = self.build_gen_loss(self.co_g_logits, 
 				self.stn_layer, self.im_g_layer, self.im_rec_layer)
+			self.im_g_loss, self.co_rec_loss, self.co_g_init_loss = self.build_gen_loss(self.im_g_logits, 
+				self.co_input, self.co_g_layer, self.co_rec_layer)
 
 			### g loss mean simple (no batch)
 			self.co_g_loss_mean = tf.reduce_mean(self.co_g_loss) + self.im_rec_loss
@@ -396,6 +400,7 @@ class Condet:
 				#h2 = act(bn(conv2d(h1, 32, d_h=1, d_w=1, scope='conv2'), is_training=True))
 				h3 = conv2d(h1, self.co_dim[-1], d_h=1, d_w=1, scope='conv3')
 				o = tf.tanh(h3)
+		o = o if self.use_gen is True else z
 		return o
 
 	def build_rec(self, x, train_phase):
