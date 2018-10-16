@@ -75,7 +75,7 @@ class Condet:
 		self.rec_loss_weight = 0.0
 		self.g_init_loss_weight = 0.0
 
-		self.im_d_loss_weight = 0.0
+		self.im_dg_loss_weight = 0.0
 		self.use_gen = False
 
 		self.stn_init_loss_weight = 10.0
@@ -111,7 +111,7 @@ class Condet:
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
 			self.run_count = tf.placeholder(tf_dtype, name='run_count')
 			self.penalty_weight = tf.pow(0.9, self.run_count)
-			self.g_init_penalty_weight = tf.pow(0.95, self.run_count)
+			self.g_init_penalty_weight = tf.pow(0.9, self.run_count)
 
 			### build generators (encoder)
 			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
@@ -209,7 +209,7 @@ class Condet:
 			self.im_d_loss_mean = tf.reduce_mean(self.im_d_r_loss + self.im_d_g_loss) + \
 				self.gp_loss_weight * tf.reduce_mean(self.im_gp_loss)
 
-			self.d_loss_total = self.co_d_loss_mean + self.im_d_loss_weight * self.im_d_loss_mean
+			self.d_loss_total = self.co_d_loss_mean + self.im_dg_loss_weight * self.im_d_loss_mean
 
 			### build g loss and rec losses
 			self.co_g_loss, self.im_rec_loss, self.im_g_init_loss = self.build_gen_loss(self.co_g_logits, 
@@ -218,8 +218,8 @@ class Condet:
 				self.co_input, self.co_g_layer, self.co_rec_layer)
 
 			### g loss mean simple (no batch)
-			self.co_g_loss_mean = tf.reduce_mean(self.co_g_loss) + self.im_rec_loss
-			self.im_g_loss_mean = tf.reduce_mean(self.im_g_loss) + self.im_rec_loss
+			self.co_g_loss_mean = tf.reduce_mean(self.co_g_loss)
+			self.im_g_loss_mean = tf.reduce_mean(self.im_g_loss)
 
 			### g_att and grad logs
 			#g_att_grad = tf.gradients(self.g_loss_mean, self.g_att)
@@ -240,7 +240,7 @@ class Condet:
 			##	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.co_dim)]), axis=1)
 
 			### g loss combination
-			self.g_loss_total = self.co_g_loss_mean + self.im_g_loss_mean + \
+			self.g_loss_total = self.co_g_loss_mean + self.im_dg_loss_weight * self.im_g_loss_mean + \
 				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
 				self.stn_scale_loss_weight * self.stn_scale_loss + \
@@ -369,7 +369,7 @@ class Condet:
 			tf.reduce_sum(tf.square(data_layer - rec_layer), axis=[1,2,3]))
 
 		init_loss = tf.reduce_mean(
-			tf.reduce_sum(tf.square(data_layer - g_layer), axis=[1,2,3]))
+			tf.reduce_sum(tf.square(tf.stop_gradient(data_layer) - g_layer), axis=[1,2,3]))
 
 		return g_loss, rec_loss, init_loss
 
@@ -390,7 +390,7 @@ class Condet:
 				#o = tf.tanh(h2_tr)
 
 				### add some noise
-				z_n_dim = 2
+				z_n_dim = 1
 				z_n = tf.random_uniform([tf.shape(z)[0], tf.shape(z)[1], tf.shape(z)[2], z_n_dim], minval=-1.0, maxval=1.0, dtype=tf_dtype)
 				#z_n = tf.reshape(z_n, [tf.shape(z)[0], 1, 1, z_n_dim])
 				#z_n = tf.tile(z_n, [1, tf.shape(z)[1], tf.shape(z)[2], 1])
@@ -457,8 +457,17 @@ class Condet:
 			th = 2.0*tf.sigmoid(dense(flat, 1, 'htrans', reuse=reuse))
 			tw = 2.0*tf.sigmoid(dense(flat, 1, 'wtrans', reuse=reuse))
 
+			### biases
+			sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, initializer=1.0)
+			sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, initializer=1.0)
+			th_b = tf.get_variable('htrans_bias', dtype=tf_dtype, initializer=0.0)
+			tw_b = tf.get_variable('wtrans_bias', dtype=tf_dtype, initializer=0.0)
+
+			### theta init setup
 			z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
-			theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
+			#theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
+			#theta_init = tf.constant([[1., 0., 0., 0., 1., 0.]], dtype=tf_dtype)
+			theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
 			print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
 			#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
 			theta = tf.concat([-sh, z, th, z, -sw, tw], axis=1) + theta_init

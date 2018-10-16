@@ -921,6 +921,7 @@ if __name__ == '__main__':
 	print '>>> INPUT TEST SIZE:', test_im.shape
 	'''
 	### svhn_cut (as content images)
+	'''
 	svhn_32_train = '/media/evl/Public/Mahyar/Data/svhn/train_32x32.mat'
 	svhn_32_test = '/media/evl/Public/Mahyar/Data/svhn/test_32x32.mat'
 	svhn_train_co, svhn_train_co_labs = read_svhn_32(svhn_32_train)
@@ -929,7 +930,8 @@ if __name__ == '__main__':
 	svhn_test_bbox, svhn_test_im = prep_svhn(svhn_test_co)
 	print '>>> SVHN TRAIN SIZE:', svhn_train_co.shape
 	print '>>> SVHN TEST SIZE:', svhn_test_co.shape
-
+	'''
+	
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
 	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
@@ -953,7 +955,7 @@ if __name__ == '__main__':
 	'''
 	TENSORFLOW SETUP
 	'''
-	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9)
+	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.4)
 	config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 	sess = tf.Session(config=config)
 	
