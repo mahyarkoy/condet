@@ -74,9 +74,9 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	sample_size = co_data.shape[0] if sample_size is None else sample_size
 	
 	### generate random bg
-	#bgc = np.array([0., 0., 0.]).reshape((1,1,1,3))
-	#im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
-	im_bg = np.random.uniform(size=(sample_size,)+im_size)
+	bgc = np.array([0., 0., 0.]).reshape((1,1,1,3))
+	im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
+	#im_bg = np.random.uniform(size=(sample_size,)+im_size)
 
 	### generate random bounding boxes with mnist digits
 	im_bboxes = list()
@@ -90,11 +90,28 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 		co_re_size = co_re.shape
 		top_rand = np.random.randint(im_size[0]-co_re_size[0])
 		left_rand = np.random.randint(im_size[1]-co_re_size[1])
-
+		im_bg[i, ...] = add_clutter(im_bg[i, ...], co_data)
 		im_bg[i, top_rand:top_rand+co_re_size[0], left_rand:left_rand+co_re_size[1], ...] = co_re
 		im_bboxes.append(np.array(
 			[left_rand, top_rand, left_rand+co_re_size[1]-1, top_rand+co_re_size[0]-1]).reshape(1,4))
 	return im_bboxes, im_bg
+
+def add_clutter(im, clutter_source):
+	cl_size = (10, 10)
+	cl_num = 10
+	im_size = im.shape
+	src_size = clutter_source.shape[1:]
+	im_cl = np.array(im)
+	for i in range(cl_num):
+		top_rand = np.random.randint(im_size[0]-cl_size[0])
+		left_rand = np.random.randint(im_size[1]-cl_size[1])
+		top_rand_src = np.random.randint(src_size[0]-cl_size[0])
+		left_rand_src = np.random.randint(src_size[1]-cl_size[1])
+		id_src = np.random.randint(clutter_source.shape[0])
+		sample_cl = clutter_source[id_src, top_rand_src:top_rand_src+cl_size[0], left_rand_src:left_rand_src+cl_size[1], ...]
+		im_cl[top_rand:top_rand+cl_size[0], left_rand:left_rand+cl_size[1], ...] = sample_cl
+	return im_cl
+
 
 '''
 Crop and resize single channel input (W,H) into im_size shape (PIL).
@@ -401,17 +418,23 @@ def im_color_borders(im_data, im_labels, max_label=None, color_map=None):
 	else:
 		cmap = mat_cm.get_cmap(color_map)
 		rgb_colors = cmap(im_labels_norm)[:, :3] * 2. - 1.
-	rgb_colors_t = np.tile(rgb_colors.reshape((imb, 1, 1, 3)), (1, imh, imw, 1))
+	rgb_colors_t = np.tile(rgb_colors.reshape((imb, 1, 1, 3)), (1, imh+2*fh, imw+2*fw, 1))
+
+	### put im into rgb_colors_t
+	for b in range(imb):
+		rgb_colors_t[b, fh:imh+fh, fw:imw+fw, :] = im_data[b, ...]
+
+	return rgb_colors_t
 
 	### create mask
-	box_mask = np.ones((imh, imw))
-	box_mask[fh+1:imh-fh, fw+1:imw-fw] = 0.
-	box_mask_t = np.tile(box_mask.reshape((1, imh, imw, 1)), (imb, 1, 1, 3))
-	box_mask_inv = np.abs(box_mask_t - 1.)
+	#box_mask = np.ones((imh, imw))
+	#box_mask[fh+1:imh-fh, fw+1:imw-fw] = 0.
+	#box_mask_t = np.tile(box_mask.reshape((1, imh, imw, 1)), (imb, 1, 1, 3))
+	#box_mask_inv = np.abs(box_mask_t - 1.)
 
 	### apply mask
-	im_data_border = im_data_t * box_mask_inv + rgb_colors_t * box_mask_t
-	return im_data_border
+	#im_data_border = im_data_t * box_mask_inv + rgb_colors_t * box_mask_t
+	#return im_data_border
 
 '''
 im_data should be a (columns, rows, imh, imw, imc).
@@ -422,7 +445,9 @@ def block_draw(im_data, path, separate_channels=False, border=False):
 	cols, rows, imh, imw, imc = im_data.shape
 	### border
 	if border:
-		im_draw = im_color_borders(im_data.reshape((-1, imh, imw, imc)), np.zeros(cols*rows, dtype=np.int32), color_map='hot')
+		im_draw = im_color_borders(im_data.reshape((-1, imh, imw, imc)), 
+			1.*np.ones(cols*rows, dtype=np.int32), max_label=0., color_map='RdBu')
+		imb, imh, imw, imc = im_draw.shape
 		im_draw = im_draw.reshape((cols, rows, imh, imw, imc))
 	else:
 		im_draw = im_data
@@ -931,7 +956,7 @@ if __name__ == '__main__':
 	print '>>> SVHN TRAIN SIZE:', svhn_train_co.shape
 	print '>>> SVHN TEST SIZE:', svhn_test_co.shape
 	'''
-	
+
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
 	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
