@@ -74,9 +74,9 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	sample_size = co_data.shape[0] if sample_size is None else sample_size
 	
 	### generate random bg
-	bgc = np.array([0., 0., 0.]).reshape((1,1,1,3))
-	im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
-	#im_bg = np.random.uniform(size=(sample_size,)+im_size)
+	#bgc = np.array([0., 0., 0.]).reshape((1,1,1,3))
+	#im_bg = np.tile(bgc, (sample_size, im_size[0], im_size[1], 1))
+	im_bg = np.random.uniform(size=(sample_size,)+im_size)
 
 	### generate random bounding boxes with mnist digits
 	im_bboxes = list()
@@ -90,15 +90,15 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 		co_re_size = co_re.shape
 		top_rand = np.random.randint(im_size[0]-co_re_size[0])
 		left_rand = np.random.randint(im_size[1]-co_re_size[1])
-		im_bg[i, ...] = add_clutter(im_bg[i, ...], co_data)
+		#im_bg[i, ...] = add_clutter(im_bg[i, ...], co_data)
 		im_bg[i, top_rand:top_rand+co_re_size[0], left_rand:left_rand+co_re_size[1], ...] = co_re
 		im_bboxes.append(np.array(
 			[left_rand, top_rand, left_rand+co_re_size[1]-1, top_rand+co_re_size[0]-1]).reshape(1,4))
 	return im_bboxes, im_bg
 
 def add_clutter(im, clutter_source):
-	cl_size = (10, 10)
-	cl_num = 10
+	cl_size = (5, 5)
+	cl_num = 5
 	im_size = im.shape
 	src_size = clutter_source.shape[1:]
 	im_cl = np.array(im)
@@ -134,9 +134,13 @@ def im_sq_resize(im_input, im_size, square=False):
 
 '''
 Get mnist [0,1] raw input data and return (bboxes, im_data, co_data) in [-1,1].
-bboxes: a list where each item is a matrix corresponding to one images with (l, t, r, b) as rows
+bboxes:	a list where each item is a matrix corresponding to one images with (l, t, r, b) as rows
+label:	if None uses all of im_input to construct both co and im data.
+		otherwise will select co_per_class images from each class of im_input as co_data
+		and the rest as im_data.
+warning: output data loses label info when lable is not None.
 '''
-def prep_mnist(im_input, co_size=(32, 32, 3)):
+def prep_mnist(im_input, co_size=(32, 32, 3), label=None, co_per_class=1):
 	### read content images and resize to co_size
 	im_input = im_input.reshape((im_input.shape[0], 28, 28, 1))
 	im_input_re = np.zeros((im_input.shape[0], co_size[0], co_size[1], 1))
@@ -145,9 +149,26 @@ def prep_mnist(im_input, co_size=(32, 32, 3)):
 			#resize(im_input[i, ...], (co_size[0], co_size[1]), preserve_range=True)
 	co_data = np.tile(im_input_re, [1,1,1,3])
 
+	### select a number of content images per class
+	co_select = np.zeros(co_data.shape[0], dtype=bool)
+	if label is not None:
+		co_data, label = shuffle_data(co_data, label=label)
+		class_num = np.max(label)+1
+		class_counter = np.zeros(class_num)
+		for i in range(co_data.shape[0]):
+			if np.sum(class_counter) == class_num * co_per_class:
+				break
+			if class_counter[label[i]] == co_per_class:
+				continue
+			co_select[i] = True
+			class_counter[label[i]] += 1
+		im_select = np.invert(co_select)
+	else:
+		im_select = co_select = np.invert(co_select)
+
 	### put co_data on random background
-	bboxes, im_data = make_rand_bg(co_data)
-	return bboxes, im_data * 2. - 1., co_data * 2. - 1.
+	bboxes, im_data = make_rand_bg(co_data[im_select, ...])
+	return bboxes, im_data * 2. - 1., co_data[co_select] * 2. - 1.
 
 def prep_svhn(co_data):
 	co_data_re = (co_data + 1.0) / 2.0
@@ -519,11 +540,11 @@ def draw_im_stn(ims, bboxes, path, trans, recs, stn_bbox, stn_im):
 	trans_re = np.zeros(ims.shape)
 	for i in range(ims.shape[0]):
 		stn_im_re[i, ...] = resize(stn_im[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
-	for i in range(ims.shape[0]):
-		recs_re[i, ...] = resize(recs[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
-	for i in range(ims.shape[0]):
-		trans_re[i, ...] = resize(trans[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
-	im_mat = np.stack([ims_bb, ims_stn_bb, stn_im_re, trans_re, recs_re], axis=1)
+	#for i in range(ims.shape[0]):
+	#	recs_re[i, ...] = resize(recs[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
+	#for i in range(ims.shape[0]):
+	#	trans_re[i, ...] = resize(trans[i, ...], (ims.shape[1], ims.shape[2]), preserve_range=True)
+	im_mat = np.stack([ims_bb, ims_stn_bb, stn_im_re], axis=1) #trans_re, recs_re], axis=1)
 	block_draw(im_mat, path, border=True)
 	return
 
@@ -579,15 +600,20 @@ def stn_theta_to_bbox(condet, theta):
 	bbox = bbox.astype(np.int32)
 	return [bbox[b, ...].reshape((1,4)) for b in range(bbox.shape[0])]
 
-def shuffle_data(im_data, im_bboxes=None):
+def shuffle_data(im_data, im_bboxes=None, label=None):
 	order = np.arange(im_data.shape[0])
 	np.random.shuffle(order)
 	im_data_sh = im_data[order, ...]
-	if im_bboxes is None:
+	if im_bboxes is None and label is None:
 		return im_data_sh
-	else:
+	elif im_bboxes is None:
+		return im_data_sh, label[order]
+	elif label is None:
 		im_bboxes_sh = [im_bboxes[i] for i in order]
 		return im_data_sh, im_bboxes_sh
+	else:
+		im_bboxes_sh = [im_bboxes[i] for i in order]
+		return im_data_sh, im_bboxes_sh, label[order]
 
 '''
 Train Condet:
@@ -650,11 +676,15 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 
 			### choose content batch for each input batch
 			co_batch_end = co_batch_start + batch_len
-			if co_batch_end > co_size:
-				co_batch_start = 0
-				co_batch_end = batch_len
 			batch_co = train_co[co_batch_start:co_batch_end, ...]
-			co_batch_start += batch_len
+			if co_batch_end > co_size:
+				co_len = batch_co.shape[0]
+				co_batch_rep = [train_co for rep in range((batch_len-co_len)//co_size)]
+				co_batch_rem = train_co[0:(batch_len-co_len)%co_size, ...]
+				batch_co = np.concatenate([batch_co]+co_batch_rep+[co_batch_rem], axis=0)
+				co_batch_start = (batch_len-co_len)%co_size
+			else:
+				co_batch_start += batch_len
 		
 			### evaluate energy distance between real and gen distributions
 			if itr_total % eval_step == 0:
@@ -891,6 +921,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	### sample and batch size
 	batch_size = 64
 	draw_size = 20
+	co_data = None
 	
 	### collect real and gen samples **mt**
 	r_samples = im_data[0:sample_size, ...]
@@ -960,7 +991,8 @@ if __name__ == '__main__':
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
 	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
+	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], 
+																label=mnist_train_data[1], co_per_class=1)
 	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
 	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
 	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
@@ -1007,6 +1039,12 @@ if __name__ == '__main__':
 	iou_mean, iou_std = eval_iou(rand_att, test_bbox[0:sample_size])
 	print ">>> Rand IOU mean: ", iou_mean
 	print ">>> Rand IOU std: ", iou_std
+
+	### draw samples from content
+	print ">>> TRAIN CO shape: ", train_co.shape
+	print ">>> TRAIN IM shape: ", train_im.shape
+	print ">>> TRAIN TOTAL shape: ", mnist_train_data[0].shape
+	block_draw(train_co.reshape((train_co.shape[0], 1)+train_co.shape[1:]), log_path+'/train_co_all.png', border=True)
 
 	'''
 	GAN SETUP SECTION

@@ -541,7 +541,8 @@ class Condet:
 		if disc_only:
 			feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: False}
 			#res_list = [self.rg_grad_norm_output, self.d_r_loss_mean_sep, self.g_loss_mean_sep]
-			res_list = [(self.co_grad_norm + self.im_grad_norm) / 2.]
+			res_list = [(self.co_grad_norm + self.im_dg_loss_weight * self.im_grad_norm) \
+						/ (1. + self.im_dg_loss_weight)]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			#return res_list[0].flatten(), res_list[1].flatten(), res_list[2].flatten()
 			return res_list[0].flatten(), 0., 0.
