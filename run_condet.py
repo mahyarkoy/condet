@@ -991,8 +991,9 @@ if __name__ == '__main__':
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
 	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], 
-																label=mnist_train_data[1], co_per_class=1)
+	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
+	mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
+															label=mnist_val_data[1], co_per_class=1)
 	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
 	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
 	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
@@ -1002,17 +1003,19 @@ if __name__ == '__main__':
 	#train_bbox = svhn_train_bbox
 	#test_im = svhn_test_im
 	#test_bbox = svhn_test_bbox
+	
 	train_im = mnist_train_im
 	train_bbox = mnist_train_bbox
+	train_co = mnist_val_co
+
 	test_im = mnist_test_im
 	test_bbox = mnist_test_bbox
-	train_co = mnist_train_co
 	test_co = mnist_test_co
 
 	'''
 	TENSORFLOW SETUP
 	'''
-	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.4)
+	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.45)
 	config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 	sess = tf.Session(config=config)
 	
