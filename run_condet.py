@@ -36,8 +36,8 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID" # so the IDs match nvidia-smi
 os.environ["CUDA_VISIBLE_DEVICES"] = "1" # "0, 1" for multiple
 
 arg_parser = argparse.ArgumentParser()
-arg_parser.add_argument('-l', '--log-path', dest='log_path', required=True, help='log directory to store logs.')
-arg_parser.add_argument('-e', '--eval', dest='eval_int', required=True, help='eval intervals.')
+arg_parser.add_argument('-l', '--log-path', dest='log_path', default='logs', help='log directory to store logs.')
+arg_parser.add_argument('-e', '--eval', dest='eval_int', default=10000, help='eval intervals.')
 arg_parser.add_argument('-s', '--seed', dest='seed', default=0, help='random seed.')
 args = arg_parser.parse_args()
 log_path = args.log_path
@@ -53,16 +53,6 @@ import tf_condet
 #global_cmap = mat_cm.get_cmap('tab20')
 #global_color_locs = np.arange(20) / 20.
 #global_color_set = global_cmap(global_color_locs)
-
-### log path setups
-mnist_stack_size = 1
-log_path_snap = log_path+'/snapshots'
-log_path_draw = log_path+'/draws'
-log_path_sum = log_path+'/sums'
-
-os.system('mkdir -p '+log_path_snap)
-os.system('mkdir -p '+log_path_draw)
-os.system('mkdir -p '+log_path_sum)
 
 '''
 Generate noise background of im_size, and randomly paste co_data into it. pixel value is [0,1].
@@ -170,6 +160,100 @@ def prep_mnist(im_input, co_size=(32, 32, 3), label=None, co_per_class=1):
 	bboxes, im_data = make_rand_bg(co_data[im_select, ...])
 	return bboxes, im_data * 2. - 1., co_data[co_select] * 2. - 1.
 
+def read_cub_file(fname):
+	vals = list()
+	with open(fname, 'r') as fs:
+		for l in fs:
+			vals.append(l.strip().split(' ')[1:])
+	return vals
+
+'''
+Reading CUB dataset.
+co_num, test_num, train_num: an ndarray of size 200, each element number of images to read from that class.
+if integer is provided for any of the above, an ndarray with that value is contructed.
+shuffles the read data.
+'''
+def read_cub(cub_path, co_num, test_num, train_num, im_size=128, co_size=64):
+	### init
+	co_num = np.array(co_num) if type(co_num) is np.ndarray else co_num*np.ones(200)
+	train_num = np.array(train_num) if type(train_num) is np.ndarray else train_num*np.ones(200)
+	test_num = np.array(test_num) if type(test_num) is np.ndarray else test_num*np.ones(200)
+
+	### read image file names, bboxes, and classes
+	im_fnames = np.array([v[0] for v in read_cub_file(cub_path+'/images.txt')])
+	im_class = np.array([int(v[0]) for v in read_cub_file(cub_path+'/image_class_labels.txt')]) - 1
+	im_bbox = np.array(
+		[[int(float(v)) for v in bb] for bb in read_cub_file(cub_path+'/bounding_boxes.txt')])
+
+	### shuffle
+	order = np.arange(im_fnames.shape[0])
+	np.random.shuffle(order)
+	im_fnames = im_fnames[order]
+	im_class = im_class[order]
+	im_bbox = im_bbox[order, ...]
+
+	### read images
+	train_im = list()
+	test_im = list()
+	co_im = list()
+	train_labs = list()
+	test_labs = list()
+	co_labs = list()
+	train_bb = list()
+	test_bb = list()
+	total_num = np.sum(co_num+test_num+train_num)
+	print '>>> Reading CUB from: '+cub_path
+	widgets = ["CUB", Percentage(), Bar(), ETA()]
+	pbar = ProgressBar(maxval=total_num, widgets=widgets)
+	pbar.start()
+	counter = 0
+	for i, c in enumerate(im_class):
+		pbar.update(counter)
+		counter += 1
+		#print '>>> i: ', im_fnames[i]
+		if co_num[c] > 0:
+			im = read_image(cub_path+'/images/'+im_fnames[i], co_size, sqcrop=False, bbox=im_bbox[i])
+			co_im.append(im)
+			co_labs.append(c)
+			co_num[c] -= 1
+		elif test_num[c] > 0:
+			im, w, h = read_image(cub_path+'/images/'+im_fnames[i], im_size, 
+				sqcrop=False, verbose=True)
+			test_im.append(im)
+			test_labs.append(c)
+			bbox = im_bbox[i]
+			### transform bbox
+			im_scale_w = 1.0 * im_size / w
+			im_scale_h = 1.0 * im_size / h
+			bbox[0] = int(bbox[0] * im_scale_w)
+			bbox[1] = int(bbox[1] * im_scale_h)
+			bbox[2] = int(bbox[2] * im_scale_w)
+			bbox[3] = int(bbox[3] * im_scale_h)
+			test_bb.append(np.array(
+				[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]).reshape(1,4))
+			test_num[c] -= 1	
+		elif train_num[c] > 0:
+			im, w, h = read_image(cub_path+'/images/'+im_fnames[i], im_size, 
+				sqcrop=False, verbose=True)
+			train_im.append(im)
+			train_labs.append(c)
+			bbox = im_bbox[i]
+			### transform bbox
+			im_scale_w = 1.0 * im_size / w
+			im_scale_h = 1.0 * im_size / h
+			bbox[0] = int(bbox[0] * im_scale_w)
+			bbox[1] = int(bbox[1] * im_scale_h)
+			bbox[2] = int(bbox[2] * im_scale_w)
+			bbox[3] = int(bbox[3] * im_scale_h)
+			train_bb.append(np.array(
+				[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]).reshape(1,4))
+			train_num[c] -= 1
+		else:
+			counter -= 1
+	return (np.array(co_im), co_labs), \
+		(np.array(test_im), test_bb, test_labs), \
+		(np.array(train_im), train_bb, train_labs)
+
 def prep_svhn(co_data):
 	co_data_re = (co_data + 1.0) / 2.0
 	### put co_data on random background
@@ -220,17 +304,29 @@ def im_process(im_data, im_size=28):
 	im_data_re = im_data_re * 2.0 - 1.0
 	return im_data_re
 
-def read_image(im_path, im_size):
+def read_image(im_path, im_size, sqcrop=True, bbox=None, verbose=False):
 	im = Image.open(im_path)
 	w, h = im.size
-	im_cut = min(w, h)
-	left = (w - im_cut) //2
-	top = (h - im_cut) //2
-	right = (w + im_cut) //2
-	bottom = (h + im_cut) //2
-	im_sq = im.crop((left, top, right, bottom))
+	if sqcrop:
+		im_cut = min(w, h)
+		left = (w - im_cut) //2
+		top = (h - im_cut) //2
+		right = (w + im_cut) //2
+		bottom = (h + im_cut) //2
+		im_sq = im.crop((left, top, right, bottom))
+	elif bbox is not None:
+		left = bbox[0]
+		top = bbox[1]
+		right = bbox[0] + bbox[2]
+		bottom = bbox[1] + bbox[3]
+		im_sq = im.crop((left, top, right, bottom))
+	else:
+		im_sq = im
 	im_re_pil = im_sq.resize((im_size, im_size), Image.BILINEAR)
-	im_re = np.array(im_re_pil.getdata()).reshape((im_size, im_size, 3))
+	im_re = np.array(im_re_pil.getdata())
+	### next line is because pil removes the channels for black and white images!!!
+	im_re = im_re if len(im_re.shape) > 1 else np.repeat(im_re[..., np.newaxis], 3, axis=1)
+	im_re = im_re.reshape((im_size, im_size, 3))
 	im.close()
 	'''
 	im = skio.imread(im_path)
@@ -241,7 +337,8 @@ def read_image(im_path, im_size):
 	im_sq = im[hc-im_cut:hc+im_cut, wc-im_cut:wc+im_cut, :]
 	im_re = resize(im_sq, (im_size, im_size), preserve_range=True, anti_aliasing=True)
 	'''
-	return im_re / 128.0 - 1.0
+	im_o = im_re / 128.0 - 1.0 
+	return im_o if not verbose else (im_o, w, h)
 
 def read_lsun(lsun_path, data_size, im_size=64):
 	im_data = np.zeros((data_size, im_size, im_size, 3))
@@ -554,6 +651,7 @@ ims: image tensor
 bboxes: bbox matrix, row wise (l, t, r, b)
 '''
 def draw_bbox(ims, bboxes):
+	lw = 2
 	ims = np.array(ims)
 	bcolor = 2.*np.array([1.0, 0.0, 0.0]) - 1.
 	for i in range(ims.shape[0]):
@@ -561,18 +659,18 @@ def draw_bbox(ims, bboxes):
 		bbox_mat = bboxes[i]
 		for b in range(bbox_mat.shape[0]):
 			bbox = bbox_mat[b, ...]
-			im[bbox[1]:bbox[3]+1, bbox[0], ...] = bcolor
-			im[bbox[1]:bbox[3]+1, bbox[2], ...] = bcolor
-			im[bbox[1], bbox[0]:bbox[2]+1, ...] = bcolor
-			im[bbox[3], bbox[0]:bbox[2]+1, ...] = bcolor
+			im[bbox[1]:bbox[3]+1, bbox[0]:bbox[0]+lw, ...] = bcolor
+			im[bbox[1]:bbox[3]+1, bbox[2]:bbox[2]+lw, ...] = bcolor
+			im[bbox[1]:bbox[1]+lw, bbox[0]:bbox[2]+1, ...] = bcolor
+			im[bbox[3]:bbox[3]+lw, bbox[0]:bbox[2]+1, ...] = bcolor
 	return ims
 
 '''
 Find bboxes from stn theta: shape (N, 6)
 '''
 def stn_theta_to_bbox(condet, theta):
-	#h, w = condet.data_dim[:2]
-	h = w = 64
+	h, w = condet.data_dim[:2]
+	#h = w = 64
 	### bbox left and top
 	bbox_l = (-theta[:,0] + theta[:, 2] + 1.0) * w / 2.0
 	bbox_t = (-theta[:,4] + theta[:, 5] + 1.0) * h / 2.0
@@ -811,6 +909,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	### save eval_logs
 	with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
 		pk.dump([itrs_logs, eval_logs_mat], fs)
+	### save eval_t_logs
+	with open(log_path+'/iou_test_logs.cpk', 'wb+') as fs:
+		pk.dump([itrs_logs, eval_t_logs_mat], fs)
 
 '''
 Sample sample_size data points from ganist.
@@ -952,6 +1053,15 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 
 
 if __name__ == '__main__':
+	### log path setups
+	mnist_stack_size = 1
+	log_path_snap = log_path+'/snapshots'
+	log_path_draw = log_path+'/draws'
+	log_path_sum = log_path+'/sums'
+
+	os.system('mkdir -p '+log_path_snap)
+	os.system('mkdir -p '+log_path_draw)
+	os.system('mkdir -p '+log_path_sum)
 	'''
 	DATASET LOADING AND DRAWING
 	'''
@@ -989,33 +1099,44 @@ if __name__ == '__main__':
 	'''
 
 	### mnist with noise background
-	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
-	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
-	mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
-															label=mnist_val_data[1], co_per_class=1)
-	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
-	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
-	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
+	#mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
+	#mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
+	#mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
+	#mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], label=mnist_val_data[1], co_per_class=1)
+	#mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
+	#print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
+	#print '>>> MNIST TEST SIZE:', mnist_test_im.shape
+	
+	### dataset choice
+	#train_im = mnist_train_im
+	#train_bbox = mnist_train_bbox
+	#train_co = mnist_val_co
+	
+	#test_im = mnist_test_im
+	#test_bbox = mnist_test_bbox
+
+	### cub data
+	co_num = 10
+	test_num = 5
+	train_num = 50
+	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
+	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
+	print '>>> CUB CO SIZE:', cub_co_data[0].shape
+	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
+	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
 
 	### dataset choice
-	#train_im = svhn_train_im
-	#train_bbox = svhn_train_bbox
-	#test_im = svhn_test_im
-	#test_bbox = svhn_test_bbox
-	
-	train_im = mnist_train_im
-	train_bbox = mnist_train_bbox
-	train_co = mnist_val_co
+	train_im = cub_train_data[0]
+	train_bbox = cub_train_data[1]
+	train_co = cub_co_data[0]
 
-	test_im = mnist_test_im
-	test_bbox = mnist_test_bbox
-	test_co = mnist_test_co
+	test_im = cub_test_data[0]
+	test_bbox = cub_test_data[1]
 
 	'''
 	TENSORFLOW SETUP
 	'''
-	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.45)
+	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.95)
 	config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 	sess = tf.Session(config=config)
 	
@@ -1035,19 +1156,19 @@ if __name__ == '__main__':
 	#draw_im_att(test_im[:20], test_bbox[:20], path=log_path+'/im_bb.png')
 
 	### random att iou
-	sample_size = 1000
-	rand_att = rand_baseline_att(test_im[0:sample_size], wsize=32)
-	draw_im_att(test_im[0:20, ...], test_bbox[0:20], log_path+'/rand_sample.png',
-		trans=test_im[0:20, ...], recs=test_im[0:20, ...], atts=rand_att[0:20, ...])
-	iou_mean, iou_std = eval_iou(rand_att, test_bbox[0:sample_size])
-	print ">>> Rand IOU mean: ", iou_mean
-	print ">>> Rand IOU std: ", iou_std
+	#sample_size = 1000
+	#rand_att = rand_baseline_att(test_im[0:sample_size], wsize=32)
+	#draw_im_att(test_im[0:20, ...], test_bbox[0:20], log_path+'/rand_sample.png',
+	#	trans=test_im[0:20, ...], recs=test_im[0:20, ...], atts=rand_att[0:20, ...])
+	#iou_mean, iou_std = eval_iou(rand_att, test_bbox[0:sample_size])
+	#print ">>> Rand IOU mean: ", iou_mean
+	#print ">>> Rand IOU std: ", iou_std
 
 	### draw samples from content
 	print ">>> TRAIN CO shape: ", train_co.shape
 	print ">>> TRAIN IM shape: ", train_im.shape
-	print ">>> TRAIN TOTAL shape: ", mnist_train_data[0].shape
-	block_draw(train_co.reshape((train_co.shape[0], 1)+train_co.shape[1:]), log_path+'/train_co_all.png', border=True)
+	block_draw(train_co[:20].reshape((20, 1)+train_co.shape[1:]), log_path+'/train_co_10.png', border=True)
+	im_block_draw(train_co, 5, log_path+'/train_co_samples.png', border=True)
 
 	'''
 	GAN SETUP SECTION
@@ -1065,5 +1186,8 @@ if __name__ == '__main__':
 	iou_mean, iou_std, net_stats = eval_condet(condet, test_im, test_bbox, draw_path)
 	print ">>> IOU mean: ", iou_mean
 	print ">>> IOU std: ", iou_std
+	with open(log_path+'/iou_test_log.txt', 'w+') as fs:
+		print >>fs, '>>> iou_mean: %f --- iou_std: %f' \
+			% (iou_mean, iou_std)
 	sess.close()
 

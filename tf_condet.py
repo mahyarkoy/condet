@@ -85,8 +85,8 @@ class Condet:
 		### network parameters
 		self.z_dim = 100
 		self.z_range = 1.0
-		self.data_dim = [64, 64, 3]
-		self.co_dim = [32, 32, 3]
+		self.data_dim = [128, 128, 3] #[64, 64, 3]
+		self.co_dim = [64, 64, 3] #[32, 32, 3]
 		self.stn_size = self.co_dim[:2] ### co_dim
 	
 		self.d_loss_type = 'was'
@@ -374,6 +374,8 @@ class Condet:
 		return g_loss, rec_loss, init_loss
 
 	def build_gen(self, z, train_phase, scope, reuse=False, share=False):
+		if self.use_gen is False:
+			return z
 		act = self.g_act
 		bn = tf.contrib.layers.batch_norm
 		im_size = self.co_dim[0]
@@ -400,7 +402,6 @@ class Condet:
 				#h2 = act(bn(conv2d(h1, 32, d_h=1, d_w=1, scope='conv2'), is_training=True))
 				h3 = conv2d(h1, self.co_dim[-1], d_h=1, d_w=1, scope='conv3')
 				o = tf.tanh(h3)
-		o = o if self.use_gen is True else z
 		return o
 
 	def build_rec(self, x, train_phase):
@@ -420,9 +421,9 @@ class Condet:
 		with tf.variable_scope('d_net'):
 			with tf.variable_scope(scope):
 				### encoding the 64*64*3 image with conv into 8*8*1
-				h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-				h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
-				h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
+				h1 = act(conv2d(data_layer, 32*2, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+				h2 = act(conv2d(h1, 64*2, d_h=2, d_w=2, scope='conv2', reuse=reuse))
+				h3 = act(conv2d(h2, 128*2, d_h=2, d_w=2, scope='conv3', reuse=reuse))
 				flat = tf.contrib.layers.flatten(h3)
 				o = dense(flat, 1, 'fco', reuse=reuse)
 				#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
@@ -448,9 +449,9 @@ class Condet:
 		bn = tf.contrib.layers.batch_norm
 		with tf.variable_scope('s_net'):
 			### theta net
-			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
-			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
+			h1 = act(conv2d(data_layer, 32*2, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+			h2 = act(bn(conv2d(h1, 64*2, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
+			h3 = act(bn(conv2d(h2, 128*2, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
 			flat = tf.contrib.layers.flatten(h3)
 			sh = tf.sigmoid(dense(flat, 1, 'hscale', reuse=reuse))
 			sw = tf.sigmoid(dense(flat, 1, 'wscales', reuse=reuse))

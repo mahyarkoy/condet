@@ -3,3 +3,4 @@ logs*
 snapshots
 plots/
 cl_plots/
+temp_*
