@@ -307,7 +307,13 @@ class Condet:
 				#	self.i_lr, beta1=self.i_beta1, beta2=self.i_beta2).minimize(
 				#	self.rec_loss, var_list=self.i_vars)
 
-			### summaries **g_num**
+			### theta summaries
+			#sh_sum = tf.summary.histogram("scale_h_stn", self.theta_stn[:, 0])
+			#th_sum = tf.summary.histogram("trans_h_stn", self.theta_stn[:, 2])
+			#sw_sum = tf.summary.histogram("scale_w_stn", self.theta_stn[:, 4])
+			#tw_sum = tf.summary.histogram("trans_w_stn", self.theta_stn[:, 5])
+
+			### loss summaries **g_num**
 			co_g_loss_sum = tf.summary.scalar("co_g_loss", self.co_g_loss_mean)
 			co_d_loss_sum = tf.summary.scalar("co_d_loss", self.co_d_loss_mean)
 			im_g_loss_sum = tf.summary.scalar("im_g_loss", self.im_g_loss_mean)
@@ -318,6 +324,7 @@ class Condet:
 			d_loss_sum = tf.summary.scalar("d_loss_total", self.d_loss_total)
 			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, co_g_loss_sum, co_d_loss_sum, 
 				im_g_loss_sum, im_d_loss_sum, co_rec_loss_sum, im_rec_loss_sum])
+				#sh_sum, th_sum, sw_sum, tw_sum])
 
 	def build_dis_loss(self, r_logits, g_logits, rg_logits, rg_layer):
 		### build d losses
@@ -468,10 +475,11 @@ class Condet:
 			z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
 			#theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
 			#theta_init = tf.constant([[1., 0., 0., 0., 1., 0.]], dtype=tf_dtype)
-			theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
-			print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
+			self.theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
+			print '>>> Theta Init shape: ', self.theta_init.get_shape().as_list()
 			#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
-			theta = tf.concat([-sh, z, th, z, -sw, tw], axis=1) + theta_init
+			self.theta_stn = tf.concat([-sh, z, th, z, -sw, tw], axis=1)
+			theta = self.theta_stn + self.theta_init
 			print '>>> Theta shape: ', theta.get_shape().as_list()
 
 			### stn net
@@ -521,7 +529,7 @@ class Condet:
 		### only forward stn on im_data using im_input
 		if att_only_im:
 			feed_dict = {self.im_input: im_data, self.train_phase: False}
-			res_list = [self.im_g_layer, self.im_rec_layer, self.stn_layer, self.theta]
+			res_list = [self.im_g_layer, self.im_rec_layer, self.stn_layer, self.theta, self.theta_stn, self.theta_init]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			return res_list
 

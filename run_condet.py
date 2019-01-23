@@ -50,9 +50,9 @@ tf.set_random_seed(run_seed)
 import tf_condet
 
 ### global colormap set
-#global_cmap = mat_cm.get_cmap('tab20')
-#global_color_locs = np.arange(20) / 20.
-#global_color_set = global_cmap(global_color_locs)
+global_cmap = mat_cm.get_cmap('tab10')
+global_color_locs = np.arange(10) / 10.
+global_color_set = global_cmap(global_color_locs)
 
 '''
 Generate noise background of im_size, and randomly paste co_data into it. pixel value is [0,1].
@@ -742,6 +742,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	norms_logs = list()
 	att_grad_mean_logs = list()
 	g_loss_mean_logs = list()
+	theta_logs = list()
+	theta_stn_logs = list()
+	theta_init_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -788,13 +791,16 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 			if itr_total % eval_step == 0:
 				draw_path = log_path_draw+'/sample_%d' % itr_total if itr_total % draw_step == 0 \
 					else None
-				iou_mean, iou_std, net_stats = eval_condet(condet, im_data, im_bbox, draw_path, co_data)
-				iou_mean_t, iou_std_t, _ = eval_condet(condet, test_im, test_bbox)
+				iou_mean, iou_std, net_stats, g_theta, g_theta_stn, g_theta_init = eval_condet(condet, im_data, im_bbox, draw_path, co_data)
+				iou_mean_t, iou_std_t, _, _, _, _ = eval_condet(condet, test_im, test_bbox)
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
 				eval_logs.append([iou_mean, iou_std])
 				eval_t_logs.append([iou_mean_t, iou_std_t])
 				stats_logs.append(net_stats)
 				itrs_logs.append(itr_total)
+				theta_logs.append([np.mean(g_theta, axis=0), np.std(g_theta, axis=0)])
+				theta_stn_logs.append([np.mean(g_theta_stn, axis=0), np.std(g_theta_stn, axis=0)])
+				theta_init_logs.append(g_theta_init)
 
 				### norm logs
 				grad_norms, d_r_loss_mean_sep, g_loss_mean_sep = condet.step(batch_im, batch_co, disc_only=True)
@@ -852,6 +858,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		norms_logs_mat = np.array(norms_logs)
 		att_grad_mean_mat = np.array(att_grad_mean_logs)
 		g_loss_mean_mat = np.array(g_loss_mean_logs)
+		theta_mat = np.array(theta_logs)
+		theta_stn_mat = np.array(theta_stn_logs)
+		theta_init_mat = np.array(theta_init_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -906,6 +915,49 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		fig.savefig(log_path+'/norm_grads.png', dpi=300)
 		plt.close(fig)
 
+		### plot theta
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		for g in range(6):
+			ax.plot(itrs_logs, theta_mat[:, 0, g], label='theta_%d' % g, c=global_color_set[g])
+			ax.plot(itrs_logs, theta_mat[:, 0, g] + theta_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_mat[:, 0, g] - theta_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Theta')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/theta_log.png', dpi=300)
+		plt.close(fig)
+
+		### plot theta_stn
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		for g in range(6):
+			ax.plot(itrs_logs, theta_stn_mat[:, 0, g], label='theta_stn_%d' % g, c=global_color_set[g])
+			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] + theta_stn_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] - theta_stn_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Theta STN')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/theta_stn_log.png', dpi=300)
+		plt.close(fig)
+
+		### plot theta_init
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		for g in range(6):
+			ax.plot(itrs_logs, theta_init_mat[:, 0, g], label='theta_init_%d' % g, c=global_color_set[g])
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Theta INIT')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/theta_init_log.png', dpi=300)
+		plt.close(fig)
+
 	### save eval_logs
 	with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
 		pk.dump([itrs_logs, eval_logs_mat], fs)
@@ -952,16 +1004,19 @@ def condet_att(condet, im_data, batch_size=64, att_co=False):
 	im_trans = np.zeros([im_data.shape[0]]+condet.co_dim)
 	im_rec = np.zeros([im_data.shape[0]]+condet.co_dim)
 	im_theta = np.zeros([im_data.shape[0], 6])
+	im_theta_stn = np.zeros([im_data.shape[0], 6])
+	im_theta_init = np.zeros([1, 6])
 	for batch_start in range(0, im_data.shape[0], batch_size):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
 		if not att_co:
 			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
-			im_att[batch_start:batch_end, ...], im_theta[batch_start:batch_end, ...] = \
+			im_att[batch_start:batch_end, ...], im_theta[batch_start:batch_end, ...], \
+			im_theta_stn[batch_start:batch_end, ...], im_theta_init[...]= \
 				condet.step(batch_im, att_only_im=True)
 		else:
 			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
-	return im_trans, im_rec, im_att, im_theta
+	return im_trans, im_rec, im_att, im_theta, im_theta_stn, im_theta_init
 
 '''
 Generate transformation.
@@ -1027,7 +1082,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	### collect real and gen samples **mt**
 	r_samples = im_data[0:sample_size, ...]
 	r_bboxes = bboxes[0:sample_size]
-	g_samples, g_rec, g_att, g_theta = condet_att(condet, r_samples)
+	g_samples, g_rec, g_att, g_theta, g_theta_stn, g_theta_init = condet_att(condet, r_samples)
 	g_stn_bbox = stn_theta_to_bbox(condet, g_theta)
 
 	### draw block image of gen samples
@@ -1037,7 +1092,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 			g_stn_bbox[0:draw_size], g_att[0:draw_size, ...])
 		if co_data is not None:
 			co_samples = co_data[0:draw_size, ...]
-			co_g_samples, co_rec, _, _ = condet_att(condet, co_samples, att_co=True)
+			co_g_samples, co_rec, _, _, _, _ = condet_att(condet, co_samples, att_co=True)
 			draw_co(co_samples, co_g_samples, co_rec, draw_path+'_co.png')
 		#draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
 		#	g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
@@ -1049,7 +1104,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
 	iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
-	return iou_mean, iou_std, net_stats
+	return iou_mean, iou_std, net_stats, g_theta, g_theta_stn, g_theta_init
 
 
 if __name__ == '__main__':
@@ -1116,9 +1171,9 @@ if __name__ == '__main__':
 	#test_bbox = mnist_test_bbox
 
 	### cub data
-	co_num = 10
+	co_num = 1#10
 	test_num = 5
-	train_num = 50
+	train_num = 5#50
 	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
 	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
 	print '>>> CUB CO SIZE:', cub_co_data[0].shape
@@ -1183,7 +1238,7 @@ if __name__ == '__main__':
 	GAN DATA EVAL
 	'''
 	draw_path = log_path+'/sample_final.png'
-	iou_mean, iou_std, net_stats = eval_condet(condet, test_im, test_bbox, draw_path)
+	iou_mean, iou_std, net_stats, _, _, _ = eval_condet(condet, test_im, test_bbox, draw_path)
 	print ">>> IOU mean: ", iou_mean
 	print ">>> IOU std: ", iou_std
 	with open(log_path+'/iou_test_log.txt', 'w+') as fs:
