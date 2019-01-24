@@ -660,9 +660,9 @@ def draw_bbox(ims, bboxes):
 		for b in range(bbox_mat.shape[0]):
 			bbox = bbox_mat[b, ...]
 			im[bbox[1]:bbox[3]+1, bbox[0]:bbox[0]+lw, ...] = bcolor
-			im[bbox[1]:bbox[3]+1, bbox[2]:bbox[2]+lw, ...] = bcolor
+			im[bbox[1]:bbox[3]+1, bbox[2]-lw+1:bbox[2]+1, ...] = bcolor
 			im[bbox[1]:bbox[1]+lw, bbox[0]:bbox[2]+1, ...] = bcolor
-			im[bbox[3]:bbox[3]+lw, bbox[0]:bbox[2]+1, ...] = bcolor
+			im[bbox[3]-lw+1:bbox[3]+1, bbox[0]:bbox[2]+1, ...] = bcolor
 	return ims
 
 '''
@@ -1171,9 +1171,9 @@ if __name__ == '__main__':
 	#test_bbox = mnist_test_bbox
 
 	### cub data
-	co_num = 1#10
+	co_num = 10
 	test_num = 5
-	train_num = 5#50
+	train_num = 50
 	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
 	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
 	print '>>> CUB CO SIZE:', cub_co_data[0].shape
