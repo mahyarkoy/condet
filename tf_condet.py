@@ -83,10 +83,11 @@ class Condet:
 		self.stn_scale_loss_weight = 1000.0
 
 		### network parameters
+		self.stn_num = 5
 		self.z_dim = 100
 		self.z_range = 1.0
-		self.data_dim = [128, 128, 3] #[64, 64, 3]
-		self.co_dim = [64, 64, 3] #[32, 32, 3]
+		self.data_dim = [64, 64, 3]
+		self.co_dim = [32, 32, 3]
 		self.stn_size = self.co_dim[:2] ### co_dim
 	
 		self.d_loss_type = 'was'
@@ -108,6 +109,7 @@ class Condet:
 			### define placeholders for image and content inputs
 			self.im_input = tf.placeholder(tf_dtype, [None]+self.data_dim, name='im_input')
 			self.co_input = tf.placeholder(tf_dtype, [None]+self.co_dim, name='co_input')
+			self.z_input = tf.placeholder(tf.int32, [None], name='z_input')
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
 			self.run_count = tf.placeholder(tf_dtype, name='run_count')
 			self.penalty_weight = tf.pow(0.9, self.run_count)
@@ -122,7 +124,7 @@ class Condet:
 			self.theta_decay_opt = tf.assign(self.theta_decay, self.theta_decay * 0.999)
 
 			### build stn
-			self.stn_layer, self.theta = self.build_stn(self.im_input, self.train_phase)
+			self.stn_layer, self.theta = self.build_stn(self.im_input, self.z_input, self.train_phase)
 			print '>>> STN shape: ', self.stn_layer.get_shape().as_list()
 
 			### stn init penalty
@@ -428,9 +430,9 @@ class Condet:
 		with tf.variable_scope('d_net'):
 			with tf.variable_scope(scope):
 				### encoding the 64*64*3 image with conv into 8*8*1
-				h1 = act(conv2d(data_layer, 32*2, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-				h2 = act(conv2d(h1, 64*2, d_h=2, d_w=2, scope='conv2', reuse=reuse))
-				h3 = act(conv2d(h2, 128*2, d_h=2, d_w=2, scope='conv3', reuse=reuse))
+				h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+				h2 = act(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse))
+				h3 = act(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse))
 				flat = tf.contrib.layers.flatten(h3)
 				o = dense(flat, 1, 'fco', reuse=reuse)
 				#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
@@ -450,41 +452,70 @@ class Condet:
 			#o_soft = tf.nn.sigmoid(o)
 		return o_soft
 
-	def build_stn(self, data_layer, train_phase, reuse=False):
+	def build_stn(self, data_layer, z_data, train_phase, reuse=False):
 		#scale, trans = fc(6)
 		act = self.s_act
 		bn = tf.contrib.layers.batch_norm
+		stn_list = list()
+		theta_list = list()
+		theta_init_list = list()
+		theta_stn_list = list()
 		with tf.variable_scope('s_net'):
-			### theta net
-			h1 = act(conv2d(data_layer, 32*2, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(bn(conv2d(h1, 64*2, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
-			h3 = act(bn(conv2d(h2, 128*2, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
-			flat = tf.contrib.layers.flatten(h3)
-			sh = tf.sigmoid(dense(flat, 1, 'hscale', reuse=reuse))
-			sw = tf.sigmoid(dense(flat, 1, 'wscales', reuse=reuse))
-			th = 2.0*tf.sigmoid(dense(flat, 1, 'htrans', reuse=reuse))
-			tw = 2.0*tf.sigmoid(dense(flat, 1, 'wtrans', reuse=reuse))
+			for si in range(self.stn_num):
+				s_reuse = True if si > 0 else reuse
+				#with tf.variable_scope('shared'):
+					### shared layers go here, should use s_reuse
+				with tf.variable_scope('snum_%d' % si):
+					### theta net
+					h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+					h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
+					h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
+					flat = tf.contrib.layers.flatten(h3)
+					sh = tf.sigmoid(dense(flat, 1, 'hscale', reuse=reuse))
+					sw = tf.sigmoid(dense(flat, 1, 'wscales', reuse=reuse))
+					th = 2.0*tf.sigmoid(dense(flat, 1, 'htrans', reuse=reuse))
+					tw = 2.0*tf.sigmoid(dense(flat, 1, 'wtrans', reuse=reuse))
 
-			### biases
-			sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, initializer=1.0)
-			sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, initializer=1.0)
-			th_b = tf.get_variable('htrans_bias', dtype=tf_dtype, initializer=0.0)
-			tw_b = tf.get_variable('wtrans_bias', dtype=tf_dtype, initializer=0.0)
+					### biases
+					sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, initializer=0.0)
+					sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, initializer=0.0)
+					th_b = tf.get_variable('htrans_bias', dtype=tf_dtype, initializer=-1.0)
+					tw_b = tf.get_variable('wtrans_bias', dtype=tf_dtype, initializer=-1.0)
 
-			### theta init setup
-			z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
-			#theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
-			#theta_init = tf.constant([[1., 0., 0., 0., 1., 0.]], dtype=tf_dtype)
-			self.theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
-			print '>>> Theta Init shape: ', self.theta_init.get_shape().as_list()
-			#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
-			self.theta_stn = tf.concat([-sh, z, th, z, -sw, tw], axis=1)
-			theta = self.theta_stn + self.theta_init
-			print '>>> Theta shape: ', theta.get_shape().as_list()
+					### theta init setup
+					z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
+					#theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
+					#theta_init = tf.constant([[1., 0., 0., 0., 1., 0.]], dtype=tf_dtype)
+					theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
+					print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
+					#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
+					theta_stn = tf.concat([sh, z, th, z, sw, tw], axis=1)
+					theta = theta_stn + theta_init
+					print '>>> Theta shape: ', theta.get_shape().as_list()
 
-			### stn net
-			stn_layer = stn.transformer(data_layer, theta, self.stn_size)
-		return tf.reshape(stn_layer, [-1]+self.co_dim), theta
+					### stn net
+					stn_layer = tf.reshape(stn.transformer(data_layer, theta, self.stn_size), [-1]+self.co_dim)
+
+					### collect
+					stn_list.append(stn_layer)
+					theta_list.append(theta)
+					theta_init_list.append(theta_init)
+					theta_stn_list.append(theta_stn)
+
+			### TODO: log theta better
+			self.theta_stn = theta_stn_list[-1]
+			self.theta_init = theta_init_list[-1]
+
+			### choose the theta and stn based on z input
+			z_1hot_stn = tf.reshape(tf.one_hot(z_data, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1, 1, 1])
+			z_map_stn = tf.tile(z_1hot_stn, [1, 1]+self.co_dim)
+
+			z_1hot_theta = tf.reshape(tf.one_hot(z_data, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1])
+			z_map_theta = tf.tile(z_1hot_theta, [1, 1, 6])
+
+			stn_o = tf.reduce_sum(tf.stack(stn_list, axis=1) * z_map_stn, axis=1)
+			theta_o = tf.reduce_sum(tf.stack(theta_list, axis=1) * z_map_theta, axis=1)
+			return stn_o, theta_o
 
 	def start_session(self):
 		self.saver = tf.train.Saver(tf.global_variables(), 
@@ -501,7 +532,7 @@ class Condet:
 		self.writer.add_summary(sum_str, counter)
 
 	def step(self, im_data, co_data=None, gen_update=False, 
-		gen_only=False, disc_only=False, stats_only=False, 
+		gen_only=False, disc_only=False, stats_only=False, z_data=None, 
 		att_only_co=False, att_only_im=False, run_count=0.0):
 
 		if stats_only:
@@ -512,6 +543,13 @@ class Condet:
 		batch_size = im_data.shape[0]		
 		im_data = im_data.astype(np_dtype) if im_data is not None else None
 		co_data = co_data.astype(np_dtype) if co_data is not None else None
+
+		if z_data is None:
+			#g_th = self.g_num
+			#z_pr = np.exp(self.pg_temp * self.g_rl_pvals[:g_th])
+			#z_pr = z_pr / np.sum(z_pr)
+			#z_data = np.random.choice(g_th, size=batch_size, p=z_pr)
+			z_data = np.random.randint(low=0, high=self.stn_num, size=batch_size)
 
 		### only forward attention on im_data using co_input (no transformation)
 		#if att_only_co:
@@ -528,8 +566,8 @@ class Condet:
 
 		### only forward stn on im_data using im_input
 		if att_only_im:
-			feed_dict = {self.im_input: im_data, self.train_phase: False}
-			res_list = [self.im_g_layer, self.im_rec_layer, self.stn_layer, self.theta, self.theta_stn, self.theta_init]
+			feed_dict = {self.im_input: im_data, self.z_input: z_data, self.train_phase: False}
+			res_list = [self.im_g_layer, self.im_rec_layer, self.stn_layer, self.co_g_logits, self.theta, self.theta_stn, self.theta_init]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			return res_list
 
@@ -542,13 +580,13 @@ class Condet:
 
 		### only forward generator on im_data
 		if gen_only:
-			feed_dict = {self.im_input: im_data, self.train_phase: False}
+			feed_dict = {self.im_input: im_data, self.z_input: z_data, self.train_phase: False}
 			g_layer = self.sess.run(self.im_g_layer, feed_dict=feed_dict)
 			return g_layer
 
 		### only forward discriminator to compute norms
 		if disc_only:
-			feed_dict = {self.co_input: co_data, self.im_input: im_data, self.train_phase: False}
+			feed_dict = {self.co_input: co_data, self.im_input: im_data,  self.z_input: z_data, self.train_phase: False}
 			#res_list = [self.rg_grad_norm_output, self.d_r_loss_mean_sep, self.g_loss_mean_sep]
 			res_list = [(self.co_grad_norm + self.im_dg_loss_weight * self.im_grad_norm) \
 						/ (1. + self.im_dg_loss_weight)]
@@ -557,7 +595,7 @@ class Condet:
 			return res_list[0].flatten(), 0., 0.
 
 		### run one training step on discriminator, otherwise on generator, and log **g_num**
-		feed_dict = {self.co_input: co_data, self.im_input: im_data, 
+		feed_dict = {self.co_input: co_data, self.im_input: im_data, self.z_input: z_data, 
 					self.run_count: run_count, self.train_phase: True}
 		if not gen_update:
 			res_list = [self.im_g_layer, self.summary, self.d_opt]

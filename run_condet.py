@@ -522,7 +522,7 @@ Adds a color border to im_data corresponding to its im_label.
 im_data must have shape (imb, imh, imw, imc) with values in [-1,1].
 '''
 def im_color_borders(im_data, im_labels, max_label=None, color_map=None):
-	fh = fw = 2
+	fh = fw = 4
 	imb, imh, imw, imc = im_data.shape
 	max_label = im_labels.max() if max_label is None else max_label
 	if imc == 1:
@@ -646,23 +646,104 @@ def draw_im_stn(ims, bboxes, path, trans, recs, stn_bbox, stn_im):
 	return
 
 '''
+Draws:
+image with true bboxes first row
+stn multi bboxes on image second row (colors corresponding to stn id)
+att of stn on image sorted on next rows (border colors corresponding to stn id)
+'''
+def draw_multi_stn(im, im_bbox, stn_bbox, stn_att, order_list, path):
+	imb, imh, imw, imc = im.shape
+	max_row_num = 2 + np.max([a.shape[0] for a in stn_att])
+	im_bb = draw_bbox(im, im_bbox)
+	im_stn_bb = draw_bbox(im, stn_bbox, bcolor=order_list)
+	im_bb_draw = im_color_borders(im_bb, np.ones(im.shape[0]), max_label=0., color_map='RdBu')
+	im_final = np.zeros((im_bb_draw.shape[0], max_row_num,)+im_bb_draw.shape[1:])
+	im_final[:, 0, ...] = im_bb_draw
+	im_final[:, 1, ...] = \
+		im_color_borders(im_stn_bb, np.ones(im.shape[0]), max_label=0., color_map='RdBu')
+	for i in range(im.shape[0]):
+		att = stn_att[i]
+		att_re = np.zeros((att.shape[0], imh, imw, imc))
+		for a_i in range(att.shape[0]):
+			att_re[a_i, ...] = resize(att[a_i, ...], (imh, imw), preserve_range=True)
+		im_final[i, 2:2+att.shape[0], ...] = im_color_borders(att_re, order_list[i])
+	block_draw(im_final, path)
+	return
+
+
+'''
+Compute bboxes using multi stn thetas, apply non-max suppression, sort bboxes.
+im: image array for which to apply multi stn condet.
+im_bbox: list of non-max suppressed bbox_mat per image (row wise: l, t, r, b)
+im_att: list of non-max suppressed stn outputs per image
+im_logits: list of non-max suppressed d scores per image
+order_list: list where each element is an array containing the ids of the stns used, per image
+'''
+def apply_multi_stn(condet, im, iou_th=0.5):
+	data_size = im.shape[0]
+	### compute bboxes and att images for each stn in condet
+	for si in range(condet.stn_num):
+		z_data = si * np.ones(data_size)
+		g_samples, g_rec, g_att, g_logits, g_theta, g_theta_stn, g_theta_init = \
+			condet_att(condet, im, z_data=z_data)
+		g_bbox = np.array(stn_theta_to_bbox(condet, g_theta)).reshape((data_size, 1, 4))
+		if si == 0:
+			im_bbox = g_bbox
+			im_att = g_att.reshape([data_size, 1,]+condet.co_dim)
+			im_logits = g_logits.reshape([data_size, 1])
+		else:
+			im_bbox = np.concatenate([im_bbox, g_bbox], axis=1)
+			im_att = np.concatenate([im_att, g_att.reshape([data_size, 1,]+condet.co_dim)], axis=1)
+			im_logits = np.concatenate([im_logits, g_logits.reshape([data_size, 1])], axis=1)
+	
+	### sort based on logits
+	order_list = list()
+	for i in range(data_size):
+		order = np.argsort(-im_logits[i, ...])
+		order_list.append(order)
+		im_logits[i, ...] = im_logits[i, order]
+		im_bbox[i, ...] = im_bbox[i, order, ...]
+		im_att[i, ...] = im_att[i, order, ...]
+	im_logits = [im_logits[i, ...] for i in range(data_size)]
+	im_bbox = [im_bbox[i, ...] for i in range(data_size)]
+	im_att = [im_att[i, ...] for i in range(data_size)]
+	
+	### apply non-max suppression (prune bboxes)
+	for i in range(data_size):
+		sel_array = np.ones(condet.stn_num, dtype=bool)
+		bbox = im_bbox[i]
+		for si in range(condet.stn_num):
+			for sj in range(0, si):
+				if sel_array[sj] and compute_iou(bbox[si], bbox[sj]) > iou_th:
+					sel_array[si] = False
+		im_bbox[i] = im_bbox[i][sel_array, ...]
+		im_att[i] = im_att[i][sel_array, ...]
+		im_logits[i] = im_logits[i][sel_array]
+		order_list[i] = order_list[i][sel_array]
+
+	return im_bbox, im_att, im_logits, order_list, g_theta, g_theta_stn, g_theta_init
+
+'''
 Draws bboxes on top of images.
 ims: image tensor
-bboxes: bbox matrix, row wise (l, t, r, b)
+bboxes: list of bbox matrices, row wise (l, t, r, b)
 '''
-def draw_bbox(ims, bboxes):
+def draw_bbox(ims, bboxes, bcolor=None):
 	lw = 2
 	ims = np.array(ims)
-	bcolor = 2.*np.array([1.0, 0.0, 0.0]) - 1.
 	for i in range(ims.shape[0]):
 		im = ims[i, ...]
 		bbox_mat = bboxes[i]
+		bcolor_def = 2.*np.array([[1.0, 0.0, 0.0]]) - 1.
+		bbox_colors = np.repeat(bcolor_def, bbox_mat.shape[0], axis=0) if bcolor is None else \
+			global_color_set[bcolor[i], ...][:, :3] * 2. - 1.
 		for b in range(bbox_mat.shape[0]):
 			bbox = bbox_mat[b, ...]
-			im[bbox[1]:bbox[3]+1, bbox[0]:bbox[0]+lw, ...] = bcolor
-			im[bbox[1]:bbox[3]+1, bbox[2]-lw+1:bbox[2]+1, ...] = bcolor
-			im[bbox[1]:bbox[1]+lw, bbox[0]:bbox[2]+1, ...] = bcolor
-			im[bbox[3]-lw+1:bbox[3]+1, bbox[0]:bbox[2]+1, ...] = bcolor
+			bc = bbox_colors[b, ...]
+			im[bbox[1]:bbox[3]+1, bbox[0]:bbox[0]+lw, ...] = bc
+			im[bbox[1]:bbox[3]+1, bbox[2]-lw+1:bbox[2]+1, ...] = bc
+			im[bbox[1]:bbox[1]+lw, bbox[0]:bbox[2]+1, ...] = bc
+			im[bbox[3]-lw+1:bbox[3]+1, bbox[0]:bbox[2]+1, ...] = bc
 	return ims
 
 '''
@@ -745,6 +826,8 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	theta_logs = list()
 	theta_stn_logs = list()
 	theta_init_logs = list()
+	prec_logs = list()
+	recall_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -791,8 +874,10 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 			if itr_total % eval_step == 0:
 				draw_path = log_path_draw+'/sample_%d' % itr_total if itr_total % draw_step == 0 \
 					else None
-				iou_mean, iou_std, net_stats, g_theta, g_theta_stn, g_theta_init = eval_condet(condet, im_data, im_bbox, draw_path, co_data)
-				iou_mean_t, iou_std_t, _, _, _, _ = eval_condet(condet, test_im, test_bbox)
+				iou_mean, iou_std, precision, recall, net_stats, g_theta, g_theta_stn, g_theta_init = \
+					eval_condet(condet, im_data, im_bbox, draw_path, co_data)
+				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _ = \
+					eval_condet(condet, test_im, test_bbox)
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
 				eval_logs.append([iou_mean, iou_std])
 				eval_t_logs.append([iou_mean_t, iou_std_t])
@@ -801,6 +886,8 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				theta_logs.append([np.mean(g_theta, axis=0), np.std(g_theta, axis=0)])
 				theta_stn_logs.append([np.mean(g_theta_stn, axis=0), np.std(g_theta_stn, axis=0)])
 				theta_init_logs.append(g_theta_init)
+				prec_logs.append(precision_t)
+				recall_logs.append(recall_t)
 
 				### norm logs
 				grad_norms, d_r_loss_mean_sep, g_loss_mean_sep = condet.step(batch_im, batch_co, disc_only=True)
@@ -861,6 +948,8 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		theta_mat = np.array(theta_logs)
 		theta_stn_mat = np.array(theta_stn_logs)
 		theta_init_mat = np.array(theta_init_logs)
+		prec_mat = np.array(prec_logs)
+		recall_mat = np.array(recall_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -898,6 +987,21 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		ax.set_ylabel('Values')
 		ax.legend(loc=0)
 		fig.savefig(log_path+'/mean_iou_test.png', dpi=300)
+		plt.close(fig)
+
+		### plot precision and recall
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		ax.plot(itrs_logs, prec_mat, color='r', label='precision')
+		ax.plot(itrs_logs, recall_mat, color='b', label='recall')
+		ax.set_ylim(bottom=0.0, top=1.0)
+		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Precision and Recall')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/prec_recall_test.png', dpi=300)
 		plt.close(fig)
 
 		### plot norms
@@ -998,7 +1102,7 @@ def rand_baseline_att(im_data, wsize=32):
 Generate attention.
 if att_co is false, im_data passes through the gen transformation.
 '''
-def condet_att(condet, im_data, batch_size=64, att_co=False):
+def condet_att(condet, im_data, batch_size=64, att_co=False, z_data=None):
 	#im_att = np.zeros(im_data.shape[:3]+(1,))
 	im_att = np.zeros([im_data.shape[0]]+condet.co_dim)
 	im_trans = np.zeros([im_data.shape[0]]+condet.co_dim)
@@ -1006,17 +1110,19 @@ def condet_att(condet, im_data, batch_size=64, att_co=False):
 	im_theta = np.zeros([im_data.shape[0], 6])
 	im_theta_stn = np.zeros([im_data.shape[0], 6])
 	im_theta_init = np.zeros([1, 6])
+	im_logits = np.zeros([im_data.shape[0],1])
 	for batch_start in range(0, im_data.shape[0], batch_size):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
+		batch_z = z_data[batch_start:batch_end] if z_data is not None else z_data
 		if not att_co:
 			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
-			im_att[batch_start:batch_end, ...], im_theta[batch_start:batch_end, ...], \
-			im_theta_stn[batch_start:batch_end, ...], im_theta_init[...]= \
-				condet.step(batch_im, att_only_im=True)
+			im_att[batch_start:batch_end, ...], im_logits[batch_start:batch_end, ...], \
+			im_theta[batch_start:batch_end, ...], im_theta_stn[batch_start:batch_end, ...], \
+			im_theta_init[...] = condet.step(batch_im, att_only_im=True, z_data=batch_z)
 		else:
 			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
-	return im_trans, im_rec, im_att, im_theta, im_theta_stn, im_theta_init
+	return im_trans, im_rec, im_att, im_logits.reshape([-1]), im_theta, im_theta_stn, im_theta_init
 
 '''
 Generate transformation.
@@ -1046,6 +1152,57 @@ def run_ganist_disc(ganist, im_data, sampler=None, batch_size=64, z_data=None):
 		logits[batch_start:batch_end] = batch_logits
 		grad_norms[batch_start:batch_end] = batch_grad_norms
 	return logits, grad_norms
+
+'''
+Evaluate multi bboxes per image and per stn detection for that image.
+im_bbox: true list of bbox matrix (l, t, r, b) in each row
+stn_bbox: detected list of bbox matrix (l, t, r, b) in each row (must be confidence sorted)
+returns: (mean average iou over images, std average iou over images, precision, recall)
+each true bbox is only detected once, thus penalizing redundant correct stn bboxes
+'''
+def eval_multi_bbox(im_bbox, stn_bbox, iou_th=0.5):
+	true_pos = 0
+	total_pos = 0
+	total_true = 0
+	mean_iou_list = list()
+	for imbb, stnbb in zip(im_bbox, stn_bbox):
+		iou_sum = 0
+		### top detected bbox only
+		stnbb = stnbb[:1]
+		total_pos += stnbb.shape[0]
+		total_true += imbb.shape[0]
+		for sb in stnbb:
+			iou_list = list()
+			if imbb.shape[0] == 0:
+				continue
+			for ib in imbb:
+				iou_list.append(compute_iou(ib, sb))
+			match_id = np.argmax(iou_list)
+			match_iou = iou_list[match_id]
+			iou_sum += match_iou
+			true_pos += 1 if match_iou > iou_th else 0
+			### remove the detected true bbox (penalizes redundant correct stn bboxes)
+			imbb = np.delete(imbb, match_id, axis=0)
+		mean_iou_list.append(1.*iou_sum/stnbb.shape[0])
+
+	return np.mean(mean_iou_list), np.std(mean_iou_list), \
+		1.*true_pos/total_pos, 1.*(true_pos)/total_true 
+
+'''
+Compute IOU between two bboxes (l, t, r, b)
+'''
+def compute_iou(bbox1, bbox2):
+	cut_off = lambda x: x if x > 0 else 0
+	h_start = bbox2[0] if bbox1[0] < bbox2[0] else bbox1[0]
+	h_end = bbox1[2] if bbox1[2] < bbox2[2] else bbox2[2]
+	xd = cut_off(h_end-h_start+1)
+	w_start = bbox2[1] if bbox1[1] < bbox2[1] else bbox1[1]
+	w_end = bbox1[3] if bbox1[3] < bbox2[3] else bbox2[3]
+	yd = cut_off(w_end-w_start+1)
+	area1 = (bbox1[2]-bbox1[0]+1) * (bbox1[3]-bbox1[1]+1)
+	area2 = (bbox2[2]-bbox2[0]+1) * (bbox2[3]-bbox2[1]+1)
+	area_int = xd * yd
+	return 1. * area_int / (area1+area2-area_int)
 
 '''
 Evaluate intersection over union (mean and std over inputs)
@@ -1079,20 +1236,25 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	draw_size = 20
 	co_data = None
 	
-	### collect real and gen samples **mt**
+	### collect real and gen samples
 	r_samples = im_data[0:sample_size, ...]
 	r_bboxes = bboxes[0:sample_size]
-	g_samples, g_rec, g_att, g_theta, g_theta_stn, g_theta_init = condet_att(condet, r_samples)
-	g_stn_bbox = stn_theta_to_bbox(condet, g_theta)
+	g_bbox, g_att, g_logits, order_list, g_theta, g_theta_stn, g_theta_init = \
+		apply_multi_stn(condet, r_samples)
 
 	### draw block image of gen samples
 	if draw_path is not None:
-		draw_im_stn(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path+'_im.png', 
-			g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], 
-			g_stn_bbox[0:draw_size], g_att[0:draw_size, ...])
+		draw_multi_stn(r_samples[0:draw_size], r_bboxes[0:draw_size], 
+			g_bbox[0:draw_size], g_att[0:draw_size], order_list[0:draw_size], draw_path+'_im.png')
+		### save logits
+		str_round = lambda x: str(round(x, 3))
+		with open(draw_path+'_logits.txt', 'w+') as fs:
+			for l in g_logits[0:draw_size]:
+				print >>fs, '\t'.join(map(str_round, l))
+
 		if co_data is not None:
 			co_samples = co_data[0:draw_size, ...]
-			co_g_samples, co_rec, _, _, _, _ = condet_att(condet, co_samples, att_co=True)
+			co_g_samples, co_rec, _, _, _, _, _ = condet_att(condet, co_samples, att_co=True)
 			draw_co(co_samples, co_g_samples, co_rec, draw_path+'_co.png')
 		#draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
 		#	g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
@@ -1101,10 +1263,11 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	net_stats = condet.step(None, stats_only=True)
 
 	### iou
-	g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
-	iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
+	iou_mean, iou_std, precision, recall = eval_multi_bbox(r_bboxes, g_bbox)
+	#g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
+	#iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
-	return iou_mean, iou_std, net_stats, g_theta, g_theta_stn, g_theta_init
+	return iou_mean, iou_std, precision, recall, net_stats, g_theta, g_theta_stn, g_theta_init
 
 
 if __name__ == '__main__':
@@ -1154,39 +1317,40 @@ if __name__ == '__main__':
 	'''
 
 	### mnist with noise background
-	#mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
-	#mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	#mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
-	#mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], label=mnist_val_data[1], co_per_class=1)
-	#mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
-	#print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
-	#print '>>> MNIST TEST SIZE:', mnist_test_im.shape
+	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
+	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
+	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
+	mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
+		label=mnist_val_data[1], co_per_class=10)
+	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
+	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
+	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
 	
 	### dataset choice
-	#train_im = mnist_train_im
-	#train_bbox = mnist_train_bbox
-	#train_co = mnist_val_co
+	train_im = mnist_train_im
+	train_bbox = mnist_train_bbox
+	train_co = mnist_val_co
 	
-	#test_im = mnist_test_im
-	#test_bbox = mnist_test_bbox
+	test_im = mnist_test_im
+	test_bbox = mnist_test_bbox
 
 	### cub data
-	co_num = 10
-	test_num = 5
-	train_num = 50
-	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
-	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
-	print '>>> CUB CO SIZE:', cub_co_data[0].shape
-	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
-	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
+	#co_num = 10
+	#test_num = 5
+	#train_num = 50
+	#cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
+	#cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
+	#print '>>> CUB CO SIZE:', cub_co_data[0].shape
+	#print '>>> CUB TEST SIZE:', cub_test_data[0].shape
+	#print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
 
 	### dataset choice
-	train_im = cub_train_data[0]
-	train_bbox = cub_train_data[1]
-	train_co = cub_co_data[0]
+	#train_im = cub_train_data[0]
+	#train_bbox = cub_train_data[1]
+	#train_co = cub_co_data[0]
 
-	test_im = cub_test_data[0]
-	test_bbox = cub_test_data[1]
+	#test_im = cub_test_data[0]
+	#test_bbox = cub_test_data[1]
 
 	'''
 	TENSORFLOW SETUP
@@ -1222,7 +1386,10 @@ if __name__ == '__main__':
 	### draw samples from content
 	print ">>> TRAIN CO shape: ", train_co.shape
 	print ">>> TRAIN IM shape: ", train_im.shape
-	block_draw(train_co[:20].reshape((20, 1)+train_co.shape[1:]), log_path+'/train_co_10.png', border=True)
+	sub_train_co = train_co[:20]
+	sub_co_len = sub_train_co.shape[0]
+	block_draw(sub_train_co.reshape((sub_co_len, 1)+train_co.shape[1:]), 
+		log_path+'/train_co_10.png', border=True)
 	im_block_draw(train_co, 5, log_path+'/train_co_samples.png', border=True)
 
 	'''
@@ -1238,11 +1405,14 @@ if __name__ == '__main__':
 	GAN DATA EVAL
 	'''
 	draw_path = log_path+'/sample_final.png'
-	iou_mean, iou_std, net_stats, _, _, _ = eval_condet(condet, test_im, test_bbox, draw_path)
+	iou_mean, iou_std, precision, recall, net_stats, _, _, _ = \
+		eval_condet(condet, test_im, test_bbox, draw_path)
 	print ">>> IOU mean: ", iou_mean
 	print ">>> IOU std: ", iou_std
+	print ">>> Precision: ", precision
+	print ">>> Recall: ", recall
 	with open(log_path+'/iou_test_log.txt', 'w+') as fs:
-		print >>fs, '>>> iou_mean: %f --- iou_std: %f' \
-			% (iou_mean, iou_std)
+		print >>fs, '>>> iou_mean: %f, iou_std: %f, precision: %f, recall: %f' \
+			% (iou_mean, iou_std, precision, recall)
 	sess.close()
 
