@@ -477,8 +477,8 @@ class Condet:
 					tw = 2.0*tf.sigmoid(dense(flat, 1, 'wtrans', reuse=reuse))
 
 					### biases
-					sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, initializer=0.0)
-					sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, initializer=0.0)
+					sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, initializer=1.0)
+					sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, initializer=1.0)
 					th_b = tf.get_variable('htrans_bias', dtype=tf_dtype, initializer=-1.0)
 					tw_b = tf.get_variable('wtrans_bias', dtype=tf_dtype, initializer=-1.0)
 
@@ -489,7 +489,7 @@ class Condet:
 					theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
 					print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
 					#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
-					theta_stn = tf.concat([sh, z, th, z, sw, tw], axis=1)
+					theta_stn = tf.concat([-sh, z, th, z, -sw, tw], axis=1)
 					theta = theta_stn + theta_init
 					print '>>> Theta shape: ', theta.get_shape().as_list()
 

@@ -768,15 +768,16 @@ def stn_theta_to_bbox(condet, theta):
 	bbox_r = np.where(bbox_r > w-1, w-1, bbox_r)
 	bbox_b = np.where(bbox_b > h-1, h-1, bbox_b)
 
-	### reshape
-	bbox_l = bbox_l.reshape((-1,1))
-	bbox_t = bbox_t.reshape((-1,1))
-	bbox_r = bbox_r.reshape((-1,1))
-	bbox_b = bbox_b.reshape((-1,1))
+	### readjust
+	bbox_h = np.stack((bbox_l, bbox_r), axis=-1)
+	bbox_v = np.stack((bbox_t, bbox_b), axis=-1)
+	bbox_h.sort(axis=1)
+	bbox_v.sort(axis=1)
 
 	### concat and floor
-	bbox = np.floor(np.concatenate((bbox_l, bbox_t, bbox_r, bbox_b), axis=1))
+	bbox = np.floor(np.stack((bbox_h[:, 0], bbox_v[:, 0], bbox_h[:, 1], bbox_v[:, 1]), axis=-1))
 	bbox = bbox.astype(np.int32)
+	
 	return [bbox[b, ...].reshape((1,4)) for b in range(bbox.shape[0])]
 
 def shuffle_data(im_data, im_bboxes=None, label=None):
