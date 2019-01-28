@@ -74,6 +74,7 @@ class Condet:
 		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 0.0
 		self.g_init_loss_weight = 0.0
+		self.g_gp_loss_weight = 10.0
 
 		self.im_dg_loss_weight = 0.0
 		self.use_gen = False
@@ -83,7 +84,7 @@ class Condet:
 		self.stn_scale_loss_weight = 1000.0
 
 		### network parameters
-		self.stn_num = 5
+		self.stn_num = 1
 		self.z_dim = 100
 		self.z_range = 1.0
 		self.data_dim = [64, 64, 3]
@@ -214,9 +215,9 @@ class Condet:
 			self.d_loss_total = self.co_d_loss_mean + self.im_dg_loss_weight * self.im_d_loss_mean
 
 			### build g loss and rec losses
-			self.co_g_loss, self.im_rec_loss, self.im_g_init_loss = self.build_gen_loss(self.co_g_logits, 
-				self.stn_layer, self.im_g_layer, self.im_rec_layer)
-			self.im_g_loss, self.co_rec_loss, self.co_g_init_loss = self.build_gen_loss(self.im_g_logits, 
+			self.co_g_loss, self.im_rec_loss, self.im_g_init_loss, self.co_g_gp_loss = self.build_gen_loss(self.co_g_logits, 
+				self.stn_layer, self.im_g_layer, self.im_rec_layer, self.im_input, self.theta)
+			self.im_g_loss, self.co_rec_loss, self.co_g_init_loss, _ = self.build_gen_loss(self.im_g_logits, 
 				self.co_input, self.co_g_layer, self.co_rec_layer)
 
 			### g loss mean simple (no batch)
@@ -247,7 +248,8 @@ class Condet:
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
 				self.stn_scale_loss_weight * self.stn_scale_loss + \
 				self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss) + \
-				self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)
+				self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss) + \
+				self.g_gp_loss_weight * tf.reduce_mean(self.co_g_gp_loss)
 
 			### collect params
 			self.g_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "g_net")
@@ -362,7 +364,7 @@ class Condet:
 
 		return d_r_loss, d_g_loss, gp_loss, rg_grad_norm_output
 
-	def build_gen_loss(self, g_logits, data_layer, g_layer, rec_layer):
+	def build_gen_loss(self, g_logits, data_layer, g_layer, rec_layer, im_input=None, theta=None):
 		if self.g_loss_type == 'log':
 				g_loss = -tf.nn.sigmoid_cross_entropy_with_logits(
 					logits=g_logits, labels=tf.zeros_like(g_logits, tf_dtype))
@@ -380,7 +382,23 @@ class Condet:
 		init_loss = tf.reduce_mean(
 			tf.reduce_sum(tf.square(tf.stop_gradient(data_layer) - g_layer), axis=[1,2,3]))
 
-		return g_loss, rec_loss, init_loss
+		gp_loss = 0.0
+		if im_input is not None:
+			for t in [0, 2, 4, 5]:	
+				### gradient penalty
+				### NaN free norm gradient
+				rg_grad = tf.gradients(theta[:,t], im_input)
+				rg_grad_flat = tf.contrib.layers.flatten(rg_grad[0])
+				rg_sum_sq = tf.reduce_sum(tf.square(rg_grad_flat), axis=1)
+				rg_grad_ok = rg_sum_sq > 0.
+				rg_grad_safe = tf.where(rg_grad_ok, rg_grad_flat, tf.ones_like(rg_grad_flat))
+				rg_grad_abs = tf.where(rg_grad_flat >= 0., rg_grad_flat, -rg_grad_flat)
+				#rg_grad_abs =  0. * rg_grad_flat
+				rg_grad_norm = tf.where(rg_grad_ok, 
+					tf.norm(rg_grad_safe, axis=1), tf.reduce_sum(rg_grad_abs, axis=1))
+				gp_loss = gp_loss + tf.square(tf.minimum(rg_grad_norm, 1.) - 1.)
+
+		return g_loss, rec_loss, init_loss, gp_loss
 
 	def build_gen(self, z, train_phase, scope, reuse=False, share=False):
 		if self.use_gen is False:

@@ -50,8 +50,8 @@ tf.set_random_seed(run_seed)
 import tf_condet
 
 ### global colormap set
-global_cmap = mat_cm.get_cmap('tab10')
-global_color_locs = np.arange(10) / 10.
+global_cmap = mat_cm.get_cmap('Set1')
+global_color_locs = np.arange(9) / 9.
 global_color_set = global_cmap(global_color_locs)
 
 '''
