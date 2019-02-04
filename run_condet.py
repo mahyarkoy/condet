@@ -54,6 +54,11 @@ global_cmap = mat_cm.get_cmap('Set1')
 global_color_locs = np.arange(9) / 9.
 global_color_set = global_cmap(global_color_locs)
 
+### global tab colormap set
+global_cmap_tab = mat_cm.get_cmap('tab10')
+global_color_locs_tab = np.arange(10) / 10.
+global_color_set_tab = global_cmap_tab(global_color_locs_tab)
+
 '''
 Generate noise background of im_size, and randomly paste co_data into it. pixel value is [0,1].
 sample_size: if None the same number of samples as co_data are generated.
@@ -71,20 +76,36 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	### generate random bounding boxes with mnist digits
 	im_bboxes = list()
 	for i in range(sample_size):
-		hs = np.random.choice([1, 2])
-		ws = np.random.choice([1, 2])
-		#hs = np.random.uniform(1., 2.)
-		#ws = np.random.uniform(1., 2.)
-		co_re = resize(co_data[i%sample_size, ...], (co_size[0]//hs, co_size[1]//ws), 
-			anti_aliasing=True, preserve_range=True)
-		co_re_size = co_re.shape
-		top_rand = np.random.randint(im_size[0]-co_re_size[0])
-		left_rand = np.random.randint(im_size[1]-co_re_size[1])
+		im_count = np.random.choice([1, 2, 3])
+		im_bbox_list = list()
+		while len(im_bbox_list) < im_count:
+			co_data_sample = co_data[np.random.randint(co_data.shape[0])]
+			co_re, im_bbox = make_digit_bbox(co_data_sample, im_size)
+			for im_bbox_pre in im_bbox_list:
+				if compute_iou(im_bbox, im_bbox_pre) > 0.1:
+					break
+			else:
+				im_bbox_list.append(im_bbox)
+				im_bg[i, im_bbox[1]:im_bbox[1]+co_re.shape[0], 
+					im_bbox[0]:im_bbox[0]+co_re.shape[1], ...] = co_re
 		#im_bg[i, ...] = add_clutter(im_bg[i, ...], co_data)
-		im_bg[i, top_rand:top_rand+co_re_size[0], left_rand:left_rand+co_re_size[1], ...] = co_re
-		im_bboxes.append(np.array(
-			[left_rand, top_rand, left_rand+co_re_size[1]-1, top_rand+co_re_size[0]-1]).reshape(1,4))
+		im_bboxes.append(np.array(im_bbox_list))
+
 	return im_bboxes, im_bg
+
+def make_digit_bbox(im, im_size):
+	hs = np.random.choice([1, 2])
+	ws = np.random.choice([1, 2])
+	co_size = im.shape
+	#hs = np.random.uniform(1., 2.)
+	#ws = np.random.uniform(1., 2.)
+	co_re = resize(im, (co_size[0]//hs, co_size[1]//ws), 
+		anti_aliasing=True, preserve_range=True)
+	co_re_size = co_re.shape
+	top_rand = np.random.randint(im_size[0]-co_re_size[0])
+	left_rand = np.random.randint(im_size[1]-co_re_size[1])
+	im_bbox = [left_rand, top_rand, left_rand+co_re_size[1]-1, top_rand+co_re_size[0]-1]
+	return co_re, im_bbox
 
 def add_clutter(im, clutter_source):
 	cl_size = (5, 5)
@@ -829,6 +850,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	theta_init_logs = list()
 	prec_logs = list()
 	recall_logs = list()
+	logits_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -875,9 +897,10 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 			if itr_total % eval_step == 0:
 				draw_path = log_path_draw+'/sample_%d' % itr_total if itr_total % draw_step == 0 \
 					else None
-				iou_mean, iou_std, precision, recall, net_stats, g_theta, g_theta_stn, g_theta_init = \
+				iou_mean, iou_std, precision, recall, logits_mean, logits_std, \
+				net_stats, g_theta, g_theta_stn, g_theta_init = \
 					eval_condet(condet, im_data, im_bbox, draw_path, co_data)
-				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _ = \
+				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _, _, _ = \
 					eval_condet(condet, test_im, test_bbox)
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
 				eval_logs.append([iou_mean, iou_std])
@@ -889,6 +912,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				theta_init_logs.append(g_theta_init)
 				prec_logs.append(precision_t)
 				recall_logs.append(recall_t)
+				logits_logs.append([logits_mean, logits_std])
 
 				### norm logs
 				grad_norms, d_r_loss_mean_sep, g_loss_mean_sep = condet.step(batch_im, batch_co, disc_only=True)
@@ -951,6 +975,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		theta_init_mat = np.array(theta_init_logs)
 		prec_mat = np.array(prec_logs)
 		recall_mat = np.array(recall_logs)
+		logits_mat = np.array(logits_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -1005,6 +1030,20 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		fig.savefig(log_path+'/prec_recall_test.png', dpi=300)
 		plt.close(fig)
 
+		### plot logits
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		ax.plot(itrs_logs, logits_mat[:,0], color='b')
+		ax.plot(itrs_logs, logits_mat[:,0]+logits_mat[:,1], color='b', linestyle='--')
+		ax.plot(itrs_logs, logits_mat[:,0]-logits_mat[:,1], color='b', linestyle='--')
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Top Logits')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		#ax.legend(loc=0)
+		fig.savefig(log_path+'/top_logits.png', dpi=300)
+		plt.close(fig)
+
 		### plot norms
 		fig, ax = plt.subplots(figsize=(8, 6))
 		ax.clear()
@@ -1024,9 +1063,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		fig, ax = plt.subplots(figsize=(8, 6))
 		ax.clear()
 		for g in range(6):
-			ax.plot(itrs_logs, theta_mat[:, 0, g], label='theta_%d' % g, c=global_color_set[g])
-			ax.plot(itrs_logs, theta_mat[:, 0, g] + theta_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
-			ax.plot(itrs_logs, theta_mat[:, 0, g] - theta_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_mat[:, 0, g], label='theta_%d' % g, c=global_color_set_tab[g])
+			ax.plot(itrs_logs, theta_mat[:, 0, g] + theta_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_mat[:, 0, g] - theta_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
 		ax.grid(True, which='both', linestyle='dotted')
 		ax.set_title('Theta')
 		ax.set_xlabel('Iterations')
@@ -1039,9 +1078,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		fig, ax = plt.subplots(figsize=(8, 6))
 		ax.clear()
 		for g in range(6):
-			ax.plot(itrs_logs, theta_stn_mat[:, 0, g], label='theta_stn_%d' % g, c=global_color_set[g])
-			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] + theta_stn_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
-			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] - theta_stn_mat[:, 1, g], c=global_color_set[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_stn_mat[:, 0, g], label='theta_stn_%d' % g, c=global_color_set_tab[g])
+			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] + theta_stn_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] - theta_stn_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
 		ax.grid(True, which='both', linestyle='dotted')
 		ax.set_title('Theta STN')
 		ax.set_xlabel('Iterations')
@@ -1054,7 +1093,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		fig, ax = plt.subplots(figsize=(8, 6))
 		ax.clear()
 		for g in range(6):
-			ax.plot(itrs_logs, theta_init_mat[:, 0, g], label='theta_init_%d' % g, c=global_color_set[g])
+			ax.plot(itrs_logs, theta_init_mat[:, 0, g], label='theta_init_%d' % g, c=global_color_set_tab[g])
 		ax.grid(True, which='both', linestyle='dotted')
 		ax.set_title('Theta INIT')
 		ax.set_xlabel('Iterations')
@@ -1169,22 +1208,21 @@ def eval_multi_bbox(im_bbox, stn_bbox, iou_th=0.5):
 	for imbb, stnbb in zip(im_bbox, stn_bbox):
 		iou_sum = 0
 		### top detected bbox only
-		stnbb = stnbb[:1]
+		#stnbb = stnbb[:1]
 		total_pos += stnbb.shape[0]
 		total_true += imbb.shape[0]
-		for sb in stnbb:
-			iou_list = list()
-			if imbb.shape[0] == 0:
-				continue
-			for ib in imbb:
-				iou_list.append(compute_iou(ib, sb))
+		stnbb_count = stnbb.shape[0]
+		for ib in imbb:
+			if stnbb.shape[0] == 0:
+				break
+			iou_list = [compute_iou(ib, sb) for sb in stnbb]
 			match_id = np.argmax(iou_list)
 			match_iou = iou_list[match_id]
 			iou_sum += match_iou
 			true_pos += 1 if match_iou > iou_th else 0
-			### remove the detected true bbox (penalizes redundant correct stn bboxes)
-			imbb = np.delete(imbb, match_id, axis=0)
-		mean_iou_list.append(1.*iou_sum/stnbb.shape[0])
+			### remove the detected stn bbox (penalizes redundant correct stn bboxes)
+			stnbb = np.delete(stnbb, match_id, axis=0)
+		mean_iou_list.append(1.*iou_sum/stnbb_count)
 
 	return np.mean(mean_iou_list), np.std(mean_iou_list), \
 		1.*true_pos/total_pos, 1.*(true_pos)/total_true 
@@ -1243,6 +1281,11 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	g_bbox, g_att, g_logits, order_list, g_theta, g_theta_stn, g_theta_init = \
 		apply_multi_stn(condet, r_samples)
 
+	### logits mean and std
+	top_logits = [l[0] for l in g_logits]
+	logits_mean = np.mean(top_logits)
+	logits_std = np.std(top_logits)
+
 	### draw block image of gen samples
 	if draw_path is not None:
 		draw_multi_stn(r_samples[0:draw_size], r_bboxes[0:draw_size], 
@@ -1268,7 +1311,8 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	#g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
 	#iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
-	return iou_mean, iou_std, precision, recall, net_stats, g_theta, g_theta_stn, g_theta_init
+	return iou_mean, iou_std, precision, recall, logits_mean, logits_std, \
+		net_stats, g_theta, g_theta_stn, g_theta_init
 
 
 if __name__ == '__main__':
@@ -1406,7 +1450,7 @@ if __name__ == '__main__':
 	GAN DATA EVAL
 	'''
 	draw_path = log_path+'/sample_final.png'
-	iou_mean, iou_std, precision, recall, net_stats, _, _, _ = \
+	iou_mean, iou_std, precision, recall, _, _, net_stats, _, _, _ = \
 		eval_condet(condet, test_im, test_bbox, draw_path)
 	print ">>> IOU mean: ", iou_mean
 	print ">>> IOU std: ", iou_std

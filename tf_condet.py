@@ -74,7 +74,7 @@ class Condet:
 		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 0.0
 		self.g_init_loss_weight = 0.0
-		self.g_gp_loss_weight = 10.0
+		self.g_gp_loss_weight = 1.0
 
 		self.im_dg_loss_weight = 0.0
 		self.use_gen = False
@@ -84,7 +84,7 @@ class Condet:
 		self.stn_scale_loss_weight = 1000.0
 
 		### network parameters
-		self.stn_num = 1
+		self.stn_num = 5
 		self.z_dim = 100
 		self.z_range = 1.0
 		self.data_dim = [64, 64, 3]
