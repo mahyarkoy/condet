@@ -479,16 +479,23 @@ class Condet:
 		theta_init_list = list()
 		theta_stn_list = list()
 		with tf.variable_scope('s_net'):
+			### theta net
+			### shared layers go here
+			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), 
+				reuse=reuse, scope='bn2', is_training=train_phase))
+			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), 
+				reuse=reuse, scope='bn3', is_training=train_phase))
+			flat = tf.contrib.layers.flatten(h3)
 			for si in range(self.stn_num):
-				s_reuse = True if si > 0 else reuse
-				#with tf.variable_scope('shared'):
-					### shared layers go here, should use s_reuse
 				with tf.variable_scope('snum_%d' % si):
 					### theta net
-					h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-					h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
-					h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), reuse=reuse, scope='bn3', is_training=train_phase))
-					flat = tf.contrib.layers.flatten(h3)
+					#h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+					#h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), 
+					#	reuse=reuse, scope='bn2', is_training=train_phase))
+					#h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), 
+					#	reuse=reuse, scope='bn3', is_training=train_phase))
+					#flat = tf.contrib.layers.flatten(h3)
 					sh = tf.sigmoid(dense(flat, 1, 'hscale', reuse=reuse))
 					sw = tf.sigmoid(dense(flat, 1, 'wscales', reuse=reuse))
 					th = 2.0*tf.sigmoid(dense(flat, 1, 'htrans', reuse=reuse))

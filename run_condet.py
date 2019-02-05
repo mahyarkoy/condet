@@ -76,7 +76,7 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	### generate random bounding boxes with mnist digits
 	im_bboxes = list()
 	for i in range(sample_size):
-		im_count = np.random.choice([1, 2, 3])
+		im_count = np.random.choice([1])
 		im_bbox_list = list()
 		while len(im_bbox_list) < im_count:
 			co_data_sample = co_data[np.random.randint(co_data.shape[0])]
@@ -1207,8 +1207,8 @@ def eval_multi_bbox(im_bbox, stn_bbox, iou_th=0.5):
 	mean_iou_list = list()
 	for imbb, stnbb in zip(im_bbox, stn_bbox):
 		iou_sum = 0
-		### top detected bbox only
-		#stnbb = stnbb[:1]
+		### top detected bbox only: uncomment the line below
+		stnbb = stnbb[:1]
 		total_pos += stnbb.shape[0]
 		total_true += imbb.shape[0]
 		stnbb_count = stnbb.shape[0]
