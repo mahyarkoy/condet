@@ -64,7 +64,7 @@ Generate noise background of im_size, and randomly paste co_data into it. pixel 
 sample_size: if None the same number of samples as co_data are generated.
 im_size w,h must be larger than co_data w,h
 '''
-def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
+def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3), empty_chance=0.0):
 	co_size = co_data.shape[1:]
 	sample_size = co_data.shape[0] if sample_size is None else sample_size
 	
@@ -76,6 +76,9 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3)):
 	### generate random bounding boxes with mnist digits
 	im_bboxes = list()
 	for i in range(sample_size):
+		if np.random.uniform() < empty_chance:
+			im_bboxes.append(np.ones([0, 4]))
+			continue
 		im_count = np.random.choice([1])
 		im_bbox_list = list()
 		while len(im_bbox_list) < im_count:
@@ -151,7 +154,7 @@ label:	if None uses all of im_input to construct both co and im data.
 		and the rest as im_data.
 warning: output data loses label info when lable is not None.
 '''
-def prep_mnist(im_input, co_size=(32, 32, 3), label=None, co_per_class=1):
+def prep_mnist(im_input, co_size=(32, 32, 3), label=None, co_per_class=1, empty_chance=0.0):
 	### read content images and resize to co_size
 	im_input = im_input.reshape((im_input.shape[0], 28, 28, 1))
 	im_input_re = np.zeros((im_input.shape[0], co_size[0], co_size[1], 1))
@@ -178,7 +181,7 @@ def prep_mnist(im_input, co_size=(32, 32, 3), label=None, co_per_class=1):
 		im_select = co_select = np.invert(co_select)
 
 	### put co_data on random background
-	bboxes, im_data = make_rand_bg(co_data[im_select, ...])
+	bboxes, im_data = make_rand_bg(co_data[im_select, ...], empty_chance=empty_chance)
 	return bboxes, im_data * 2. - 1., co_data[co_select] * 2. - 1.
 
 def read_cub_file(fname):
@@ -684,6 +687,8 @@ def draw_multi_stn(im, im_bbox, stn_bbox, stn_att, order_list, path):
 		im_color_borders(im_stn_bb, np.ones(im.shape[0]), max_label=0., color_map='RdBu')
 	for i in range(im.shape[0]):
 		att = stn_att[i]
+		if att.shape[0] == 0:
+			continue
 		att_re = np.zeros((att.shape[0], imh, imw, imc))
 		for a_i in range(att.shape[0]):
 			att_re[a_i, ...] = resize(att[a_i, ...], (imh, imw), preserve_range=True)
@@ -693,11 +698,11 @@ def draw_multi_stn(im, im_bbox, stn_bbox, stn_att, order_list, path):
 
 
 '''
-Compute bboxes using multi stn thetas, apply non-max suppression, sort bboxes.
+Compute bboxes using multi stn thetas, sort bboxes based on logits.
 im: image array for which to apply multi stn condet.
-im_bbox: list of non-max suppressed bbox_mat per image (row wise: l, t, r, b)
-im_att: list of non-max suppressed stn outputs per image
-im_logits: list of non-max suppressed d scores per image
+im_bbox: list of bbox_mat per image (row wise: l, t, r, b)
+im_att: list of stn outputs per image
+im_logits: list of d scores per image
 order_list: list where each element is an array containing the ids of the stns used, per image
 '''
 def apply_multi_stn(condet, im, iou_th=0.5):
@@ -728,21 +733,40 @@ def apply_multi_stn(condet, im, iou_th=0.5):
 	im_logits = [im_logits[i, ...] for i in range(data_size)]
 	im_bbox = [im_bbox[i, ...] for i in range(data_size)]
 	im_att = [im_att[i, ...] for i in range(data_size)]
-	
-	### apply non-max suppression (prune bboxes)
+
+	return im_bbox, im_att, im_logits, order_list, g_theta, g_theta_stn, g_theta_init
+
+'''
+Prunes the given bounding boxes and corresponding stn output, logits and order_list.
+Applys non-max suppresion with iou_th.
+Applys low confidence cut off if dscore_mean and dscore_std are not none.
+Retruns
+im_bbox: list of non-max suppressed bbox_mat per image (row wise: l, t, r, b)
+im_att: list of non-max suppressed stn outputs per image
+im_logits: list of non-max suppressed d scores per image
+order_list: list where each element is an array containing the ids of the stns used, per image
+'''
+def prune_multi_stn(condet, im_bbox, im_att, im_logits, order_list, dscore_mean=None, dscore_std=None, iou_th=0.5):
+	data_size = len(im_bbox)
+	conf_th = None if dscore_mean is None or dscore_std is None else dscore_mean - dscore_std
+	### apply non-max suppression and low confidence cut (prune bboxes)
 	for i in range(data_size):
 		sel_array = np.ones(condet.stn_num, dtype=bool)
 		bbox = im_bbox[i]
+		logits = im_logits[i]
 		for si in range(condet.stn_num):
+			if conf_th is not None and logits[si] < conf_th:
+				sel_array[si] = False
+				continue
 			for sj in range(0, si):
-				if sel_array[sj] and compute_iou(bbox[si], bbox[sj]) > iou_th:
+				if sel_array[sj] is True and compute_iou(bbox[si], bbox[sj]) > iou_th:
 					sel_array[si] = False
 		im_bbox[i] = im_bbox[i][sel_array, ...]
 		im_att[i] = im_att[i][sel_array, ...]
 		im_logits[i] = im_logits[i][sel_array]
-		order_list[i] = order_list[i][sel_array]
+		order_list[i] = order_list[i][sel_array]	
 
-	return im_bbox, im_att, im_logits, order_list, g_theta, g_theta_stn, g_theta_init
+	return im_bbox, im_att, im_logits, order_list
 
 '''
 Draws bboxes on top of images.
@@ -899,9 +923,11 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					else None
 				iou_mean, iou_std, precision, recall, logits_mean, logits_std, \
 				net_stats, g_theta, g_theta_stn, g_theta_init = \
-					eval_condet(condet, im_data, im_bbox, draw_path, co_data)
+					eval_condet(condet, im_data, im_bbox, draw_path, co_data, const_update=True)
 				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _, _, _ = \
 					eval_condet(condet, test_im, test_bbox)
+
+				### update logs
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
 				eval_logs.append([iou_mean, iou_std])
 				eval_t_logs.append([iou_mean_t, iou_std_t])
@@ -1222,10 +1248,11 @@ def eval_multi_bbox(im_bbox, stn_bbox, iou_th=0.5):
 			true_pos += 1 if match_iou > iou_th else 0
 			### remove the detected stn bbox (penalizes redundant correct stn bboxes)
 			stnbb = np.delete(stnbb, match_id, axis=0)
-		mean_iou_list.append(1.*iou_sum/stnbb_count)
+		mean_iou = 1.*iou_sum/stnbb_count if stnbb_count > 0 else 1.
+		mean_iou_list.append(mean_iou)
 
 	return np.mean(mean_iou_list), np.std(mean_iou_list), \
-		1.*true_pos/total_pos, 1.*(true_pos)/total_true 
+		1.*true_pos/total_pos, 1.*true_pos/total_true 
 
 '''
 Compute IOU between two bboxes (l, t, r, b)
@@ -1269,7 +1296,7 @@ def bbox_to_att(bboxes, im_size):
 '''
 Returns intersection over union mean and std, net_stats, and draw_im_att
 '''
-def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000):
+def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000, const_update=False):
 	### sample and batch size
 	batch_size = 64
 	draw_size = 20
@@ -1280,11 +1307,20 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	r_bboxes = bboxes[0:sample_size]
 	g_bbox, g_att, g_logits, order_list, g_theta, g_theta_stn, g_theta_init = \
 		apply_multi_stn(condet, r_samples)
+	
+	### update const vars
+	if const_update is True:
+		### logits mean and std
+		top_logits = [l[0] for l in g_logits]
+		logits_mean = np.mean(top_logits)
+		logits_std = np.std(top_logits)
+		condet.update_const_vars([logits_mean, logits_std])
+	else:
+		logits_mean, logits_std = condet.update_const_vars()
 
-	### logits mean and std
-	top_logits = [l[0] for l in g_logits]
-	logits_mean = np.mean(top_logits)
-	logits_std = np.std(top_logits)
+	### prune bboxes
+	g_bbox, g_att, g_logits, order_list = \
+		prune_multi_stn(condet, g_bbox, g_att, g_logits, order_list, logits_mean, logits_std)
 
 	### draw block image of gen samples
 	if draw_path is not None:
@@ -1364,10 +1400,10 @@ if __name__ == '__main__':
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
 	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0])
+	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], empty_chance=0.2)
 	mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
-		label=mnist_val_data[1], co_per_class=10)
-	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0])
+		label=mnist_val_data[1], co_per_class=10, empty_chance=0.2)
+	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0], empty_chance=0.2)
 	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
 	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
 	

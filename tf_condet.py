@@ -74,7 +74,7 @@ class Condet:
 		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 0.0
 		self.g_init_loss_weight = 0.0
-		self.g_gp_loss_weight = 1.0
+		self.g_gp_loss_weight = 0.0
 
 		self.im_dg_loss_weight = 0.0
 		self.use_gen = False
@@ -113,12 +113,20 @@ class Condet:
 			self.z_input = tf.placeholder(tf.int32, [None], name='z_input')
 			self.train_phase = tf.placeholder(tf.bool, name='phase')
 			self.run_count = tf.placeholder(tf_dtype, name='run_count')
+			self.dscore_mean_input = tf.placeholder(tf_dtype, name='dscore_mean_input')
+			self.dscore_std_input = tf.placeholder(tf_dtype, name='dscore_std_input')
 			self.penalty_weight = tf.pow(0.9, self.run_count)
 			self.g_init_penalty_weight = tf.pow(0.9, self.run_count)
 
 			### build generators (encoder)
 			#self.g_layer = self.build_gen(self.im_input, self.train_phase)
 			#self.g_layer = self.im_input
+
+			### d_mean and d_std updates
+			self.dscore_mean = tf.get_variable('dscore_mean', dtype=tf_dtype, initializer=0.0)
+			self.dscore_std = tf.get_variable('dscore_std', dtype=tf_dtype, initializer=0.0)
+			self.dscore_mean_opt = tf.assign(self.dscore_mean, self.dscore_mean_input)
+			self.dscore_std_opt = tf.assign(self.dscore_std, self.dscore_std_input)
 
 			### theta decay updates
 			self.theta_decay = tf.get_variable('theta_decay', dtype=tf_dtype, initializer=.0)
@@ -481,21 +489,21 @@ class Condet:
 		with tf.variable_scope('s_net'):
 			### theta net
 			### shared layers go here
-			h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), 
-				reuse=reuse, scope='bn2', is_training=train_phase))
-			h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), 
-				reuse=reuse, scope='bn3', is_training=train_phase))
-			flat = tf.contrib.layers.flatten(h3)
+			#h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+			#h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), 
+			#	reuse=reuse, scope='bn2', is_training=train_phase))
+			#h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), 
+			#	reuse=reuse, scope='bn3', is_training=train_phase))
+			#flat = tf.contrib.layers.flatten(h3)
 			for si in range(self.stn_num):
 				with tf.variable_scope('snum_%d' % si):
 					### theta net
-					#h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-					#h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), 
-					#	reuse=reuse, scope='bn2', is_training=train_phase))
-					#h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), 
-					#	reuse=reuse, scope='bn3', is_training=train_phase))
-					#flat = tf.contrib.layers.flatten(h3)
+					h1 = act(conv2d(data_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
+					h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), 
+						reuse=reuse, scope='bn2', is_training=train_phase))
+					h3 = act(bn(conv2d(h2, 128, d_h=2, d_w=2, scope='conv3', reuse=reuse), 
+						reuse=reuse, scope='bn3', is_training=train_phase))
+					flat = tf.contrib.layers.flatten(h3)
 					sh = tf.sigmoid(dense(flat, 1, 'hscale', reuse=reuse))
 					sw = tf.sigmoid(dense(flat, 1, 'wscales', reuse=reuse))
 					th = 2.0*tf.sigmoid(dense(flat, 1, 'htrans', reuse=reuse))
@@ -555,6 +563,20 @@ class Condet:
 
 	def write_sum(self, sum_str, counter):
 		self.writer.add_summary(sum_str, counter)
+
+	'''
+	if vals_list is none: read the constant vars (dscore_mean dscore_std)
+	otherwise: update the constant vars with the values in vals_list
+	'''
+	def update_const_vars(self, vals_list=None):
+		if vals_list is None:
+			res_list = [self.dscore_mean, self.dscore_std]
+			res_list = self.sess.run(res_list)
+		else:
+			feed_dict = {self.dscore_mean_input: vals_list[0], self.dscore_std_input: vals_list[1]}
+			res_list = [self.dscore_mean_opt, self.dscore_std_opt]
+			res_list = self.sess.run(res_list, feed_dict=feed_dict)
+		return res_list
 
 	def step(self, im_data, co_data=None, gen_update=False, 
 		gen_only=False, disc_only=False, stats_only=False, z_data=None, 
