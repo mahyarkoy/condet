@@ -256,8 +256,8 @@ class Condet:
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
 				self.stn_scale_loss_weight * self.stn_scale_loss + \
 				self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss) + \
-				self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss) + \
-				self.g_gp_loss_weight * tf.reduce_mean(self.co_g_gp_loss)
+				self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)# + \
+				#self.g_gp_loss_weight * tf.reduce_mean(self.co_g_gp_loss)
 
 			### collect params
 			self.g_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "g_net")
@@ -621,7 +621,7 @@ class Condet:
 		### only forward generator on co_data using im_input
 		if att_only_co:
 			feed_dict = {self.co_input: im_data, self.train_phase: False}
-			res_list = [self.co_g_layer, self.co_rec_layer]
+			res_list = [self.co_g_layer, self.co_rec_layer, self.co_r_logits]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			return res_list
 

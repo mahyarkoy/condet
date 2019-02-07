@@ -49,10 +49,12 @@ tf.set_random_seed(run_seed)
 
 import tf_condet
 
-### global colormap set
+### global colormap set (last row is black)
+black_color = np.array([[0., 0., 0., 1.]])
 global_cmap = mat_cm.get_cmap('Set1')
 global_color_locs = np.arange(9) / 9.
 global_color_set = global_cmap(global_color_locs)
+global_color_set = np.concatenate([global_color_set, black_color], axis=0)
 
 ### global tab colormap set
 global_cmap_tab = mat_cm.get_cmap('tab10')
@@ -675,7 +677,14 @@ image with true bboxes first row
 stn multi bboxes on image second row (colors corresponding to stn id)
 att of stn on image sorted on next rows (border colors corresponding to stn id)
 '''
-def draw_multi_stn(im, im_bbox, stn_bbox, stn_att, order_list, path):
+def draw_multi_stn(im, im_bbox, stn_bbox, stn_att, order_list, path, stn_logits=None, conf_th=None):
+	### set the id of low conf bboxes to -1
+	if conf_th is not None and stn_logits is not None:
+		for i, order in enumerate(order_list):
+			stnlog = stn_logits[i]
+			order_list[i] = np.where(stnlog > conf_th, order, -1)
+
+	### construct the image
 	imb, imh, imw, imc = im.shape
 	max_row_num = 2 + np.max([a.shape[0] for a in stn_att])
 	im_bb = draw_bbox(im, im_bbox)
@@ -739,16 +748,15 @@ def apply_multi_stn(condet, im, iou_th=0.5):
 '''
 Prunes the given bounding boxes and corresponding stn output, logits and order_list.
 Applys non-max suppresion with iou_th.
-Applys low confidence cut off if dscore_mean and dscore_std are not none.
+Applys low confidence cut off if conf_th is not none.
 Retruns
 im_bbox: list of non-max suppressed bbox_mat per image (row wise: l, t, r, b)
 im_att: list of non-max suppressed stn outputs per image
 im_logits: list of non-max suppressed d scores per image
 order_list: list where each element is an array containing the ids of the stns used, per image
 '''
-def prune_multi_stn(condet, im_bbox, im_att, im_logits, order_list, dscore_mean=None, dscore_std=None, iou_th=0.5):
+def prune_multi_stn(condet, im_bbox, im_att, im_logits, order_list, conf_th=None, iou_th=0.5):
 	data_size = len(im_bbox)
-	conf_th = None if dscore_mean is None or dscore_std is None else dscore_mean - dscore_std
 	### apply non-max suppression and low confidence cut (prune bboxes)
 	for i in range(data_size):
 		sel_array = np.ones(condet.stn_num, dtype=bool)
@@ -759,7 +767,7 @@ def prune_multi_stn(condet, im_bbox, im_att, im_logits, order_list, dscore_mean=
 				sel_array[si] = False
 				continue
 			for sj in range(0, si):
-				if sel_array[sj] is True and compute_iou(bbox[si], bbox[sj]) > iou_th:
+				if sel_array[sj] and compute_iou(bbox[si], bbox[sj]) > iou_th:
 					sel_array[si] = False
 		im_bbox[i] = im_bbox[i][sel_array, ...]
 		im_att[i] = im_att[i][sel_array, ...]
@@ -875,6 +883,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	prec_logs = list()
 	recall_logs = list()
 	logits_logs = list()
+	logits_r_logs = list()
 
 	### training inits
 	d_itr = 0
@@ -919,6 +928,11 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		
 			### evaluate energy distance between real and gen distributions
 			if itr_total % eval_step == 0:
+				### update dscore
+				logits_r_mean, logits_r_std = compute_dscore_co(condet, co_data)
+				#condet.update_const_vars([logits_r_mean, logits_r_std])
+
+				### run train and test eval
 				draw_path = log_path_draw+'/sample_%d' % itr_total if itr_total % draw_step == 0 \
 					else None
 				iou_mean, iou_std, precision, recall, logits_mean, logits_std, \
@@ -939,6 +953,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				prec_logs.append(precision_t)
 				recall_logs.append(recall_t)
 				logits_logs.append([logits_mean, logits_std])
+				logits_r_logs.append([logits_r_mean, logits_r_std])
 
 				### norm logs
 				grad_norms, d_r_loss_mean_sep, g_loss_mean_sep = condet.step(batch_im, batch_co, disc_only=True)
@@ -1002,6 +1017,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		prec_mat = np.array(prec_logs)
 		recall_mat = np.array(recall_logs)
 		logits_mat = np.array(logits_logs)
+		logits_r_mat = np.array(logits_r_logs)
 
 		#eval_logs_names = ['fid_dist', 'fid_dist']
 		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
@@ -1068,6 +1084,20 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		ax.set_ylabel('Values')
 		#ax.legend(loc=0)
 		fig.savefig(log_path+'/top_logits.png', dpi=300)
+		plt.close(fig)
+
+		### plot logits on content images
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		ax.plot(itrs_logs, logits_r_mat[:,0], color='b')
+		ax.plot(itrs_logs, logits_r_mat[:,0]+logits_r_mat[:,1], color='b', linestyle='--')
+		ax.plot(itrs_logs, logits_r_mat[:,0]-logits_r_mat[:,1], color='b', linestyle='--')
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Content Logits')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('Values')
+		#ax.legend(loc=0)
+		fig.savefig(log_path+'/content_logits.png', dpi=300)
 		plt.close(fig)
 
 		### plot norms
@@ -1183,11 +1213,12 @@ def condet_att(condet, im_data, batch_size=64, att_co=False, z_data=None):
 		batch_z = z_data[batch_start:batch_end] if z_data is not None else z_data
 		if not att_co:
 			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
-			im_att[batch_start:batch_end, ...], im_logits[batch_start:batch_end, ...], \
-			im_theta[batch_start:batch_end, ...], im_theta_stn[batch_start:batch_end, ...], \
-			im_theta_init[...] = condet.step(batch_im, att_only_im=True, z_data=batch_z)
+				im_att[batch_start:batch_end, ...], im_logits[batch_start:batch_end, ...], \
+				im_theta[batch_start:batch_end, ...], im_theta_stn[batch_start:batch_end, ...], \
+				im_theta_init[...] = condet.step(batch_im, att_only_im=True, z_data=batch_z)
 		else:
-			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
+			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
+				im_logits[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
 	return im_trans, im_rec, im_att, im_logits.reshape([-1]), im_theta, im_theta_stn, im_theta_init
 
 '''
@@ -1226,13 +1257,17 @@ stn_bbox: detected list of bbox matrix (l, t, r, b) in each row (must be confide
 returns: (mean average iou over images, std average iou over images, precision, recall)
 each true bbox is only detected once, thus penalizing redundant correct stn bboxes
 '''
-def eval_multi_bbox(im_bbox, stn_bbox, iou_th=0.5):
+def eval_multi_bbox(im_bbox, stn_bbox, stn_logits, conf_th=None, iou_th=0.5):
 	true_pos = 0
 	total_pos = 0
 	total_true = 0
+	eps = 1e-6
 	mean_iou_list = list()
-	for imbb, stnbb in zip(im_bbox, stn_bbox):
-		iou_sum = 0
+	for imbb, stnbb, stnlog in zip(im_bbox, stn_bbox, stn_logits):
+		iou_sum = eps
+		### remove low conf bboxes if conf_th is not none
+		stnbb = stnbb[stnlog > conf_th, ...] if conf_th is not None else stnbb
+		
 		### top detected bbox only: uncomment the line below
 		stnbb = stnbb[:1]
 		total_pos += stnbb.shape[0]
@@ -1248,11 +1283,11 @@ def eval_multi_bbox(im_bbox, stn_bbox, iou_th=0.5):
 			true_pos += 1 if match_iou > iou_th else 0
 			### remove the detected stn bbox (penalizes redundant correct stn bboxes)
 			stnbb = np.delete(stnbb, match_id, axis=0)
-		mean_iou = 1.*iou_sum/stnbb_count if stnbb_count > 0 else 1.
+		mean_iou = 1.*iou_sum/(stnbb_count+eps)
 		mean_iou_list.append(mean_iou)
 
 	return np.mean(mean_iou_list), np.std(mean_iou_list), \
-		1.*true_pos/total_pos, 1.*true_pos/total_true 
+		1.*(true_pos+eps)/(total_pos+eps), 1.*(true_pos+eps)/(total_true+eps) 
 
 '''
 Compute IOU between two bboxes (l, t, r, b)
@@ -1294,6 +1329,16 @@ def bbox_to_att(bboxes, im_size):
 	return bbox_im
 
 '''
+Computes the D logits (mean and std) on by running condet on im_data as content
+'''
+def compute_dscore_co(condet, im_data, sample_size=1000):
+	_, _, _, logits, _, _, _ = condet_att(condet, im_data[:sample_size, ...], att_co=True)
+	top_logits = logits
+	logits_mean = np.mean(top_logits)
+	logits_std = np.std(top_logits)
+	return logits_mean, logits_std
+
+'''
 Returns intersection over union mean and std, net_stats, and draw_im_att
 '''
 def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000, const_update=False):
@@ -1308,24 +1353,28 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	g_bbox, g_att, g_logits, order_list, g_theta, g_theta_stn, g_theta_init = \
 		apply_multi_stn(condet, r_samples)
 	
+	### logits mean and std
+	top_logits = [l[0] for l in g_logits]
+	logits_mean = np.mean(top_logits)
+	logits_std = np.std(top_logits)
+
 	### update const vars
 	if const_update is True:
-		### logits mean and std
-		top_logits = [l[0] for l in g_logits]
-		logits_mean = np.mean(top_logits)
-		logits_std = np.std(top_logits)
 		condet.update_const_vars([logits_mean, logits_std])
+		dscore_mean = logits_mean
+		dscore_std = logits_std
 	else:
-		logits_mean, logits_std = condet.update_const_vars()
+		dscore_mean, dscore_std = condet.update_const_vars()
 
 	### prune bboxes
 	g_bbox, g_att, g_logits, order_list = \
-		prune_multi_stn(condet, g_bbox, g_att, g_logits, order_list, logits_mean, logits_std)
+		prune_multi_stn(condet, g_bbox, g_att, g_logits, order_list, conf_th=None)
 
 	### draw block image of gen samples
 	if draw_path is not None:
-		draw_multi_stn(r_samples[0:draw_size], r_bboxes[0:draw_size], 
-			g_bbox[0:draw_size], g_att[0:draw_size], order_list[0:draw_size], draw_path+'_im.png')
+		draw_multi_stn(r_samples[:draw_size], r_bboxes[:draw_size], 
+			g_bbox[:draw_size], g_att[:draw_size], order_list[:draw_size], draw_path+'_im.png',
+			stn_logits=g_logits[:draw_size], conf_th=dscore_mean-dscore_std)
 		### save logits
 		str_round = lambda x: str(round(x, 3))
 		with open(draw_path+'_logits.txt', 'w+') as fs:
@@ -1342,8 +1391,9 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	### get network stats
 	net_stats = condet.step(None, stats_only=True)
 
-	### iou
-	iou_mean, iou_std, precision, recall = eval_multi_bbox(r_bboxes, g_bbox)
+	### compute iou, precesion and recall
+	iou_mean, iou_std, precision, recall = \
+		eval_multi_bbox(r_bboxes, g_bbox, g_logits, conf_th=dscore_mean-dscore_std)
 	#g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
 	#iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
