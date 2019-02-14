@@ -81,7 +81,8 @@ def make_rand_bg(co_data, sample_size=None, im_size=(64, 64, 3), empty_chance=0.
 		if np.random.uniform() < empty_chance:
 			im_bboxes.append(np.ones([0, 4]))
 			continue
-		im_count = np.random.choice([1])
+		### choose how many co_data should be inserted
+		im_count = np.random.choice([1, 2, 3])
 		im_bbox_list = list()
 		while len(im_bbox_list) < im_count:
 			co_data_sample = co_data[np.random.randint(co_data.shape[0])]
@@ -717,19 +718,11 @@ order_list: list where each element is an array containing the ids of the stns u
 def apply_multi_stn(condet, im, iou_th=0.5):
 	data_size = im.shape[0]
 	### compute bboxes and att images for each stn in condet
-	for si in range(condet.stn_num):
-		z_data = si * np.ones(data_size)
-		g_samples, g_rec, g_att, g_logits, g_theta, g_theta_stn, g_theta_init = \
-			condet_att(condet, im, z_data=z_data)
-		g_bbox = np.array(stn_theta_to_bbox(condet, g_theta)).reshape((data_size, 1, 4))
-		if si == 0:
-			im_bbox = g_bbox
-			im_att = g_att.reshape([data_size, 1,]+condet.co_dim)
-			im_logits = g_logits.reshape([data_size, 1])
-		else:
-			im_bbox = np.concatenate([im_bbox, g_bbox], axis=1)
-			im_att = np.concatenate([im_att, g_att.reshape([data_size, 1,]+condet.co_dim)], axis=1)
-			im_logits = np.concatenate([im_logits, g_logits.reshape([data_size, 1])], axis=1)
+	g_att, g_logits, g_theta, g_theta_stn, g_theta_init = condet_att(condet, im)
+	im_bbox = np.array(stn_theta_to_bbox(
+		condet, g_theta.reshape([-1, 6]))).reshape((data_size, condet.stn_num, 4))
+	im_att = g_att
+	im_logits = g_logits
 	
 	### sort based on logits
 	order_list = list()
@@ -947,9 +940,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				eval_t_logs.append([iou_mean_t, iou_std_t])
 				stats_logs.append(net_stats)
 				itrs_logs.append(itr_total)
-				theta_logs.append([np.mean(g_theta, axis=0), np.std(g_theta, axis=0)])
-				theta_stn_logs.append([np.mean(g_theta_stn, axis=0), np.std(g_theta_stn, axis=0)])
-				theta_init_logs.append(g_theta_init)
+				theta_logs.append([np.mean(g_theta, axis=(0,1)), np.std(g_theta, axis=(0,1))])
+				theta_stn_logs.append([np.mean(g_theta_stn, axis=(0,1)), np.std(g_theta_stn, axis=(0,1))])
+				theta_init_logs.append([np.mean(g_theta_init, axis=0), np.std(g_theta_init, axis=0)])
 				prec_logs.append(precision_t)
 				recall_logs.append(recall_t)
 				logits_logs.append([logits_mean, logits_std])
@@ -1150,6 +1143,8 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		ax.clear()
 		for g in range(6):
 			ax.plot(itrs_logs, theta_init_mat[:, 0, g], label='theta_init_%d' % g, c=global_color_set_tab[g])
+			ax.plot(itrs_logs, theta_init_mat[:, 0, g] + theta_init_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+			ax.plot(itrs_logs, theta_init_mat[:, 0, g] - theta_init_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
 		ax.grid(True, which='both', linestyle='dotted')
 		ax.set_title('Theta INIT')
 		ax.set_xlabel('Iterations')
@@ -1200,26 +1195,27 @@ if att_co is false, im_data passes through the gen transformation.
 '''
 def condet_att(condet, im_data, batch_size=64, att_co=False, z_data=None):
 	#im_att = np.zeros(im_data.shape[:3]+(1,))
-	im_att = np.zeros([im_data.shape[0]]+condet.co_dim)
-	im_trans = np.zeros([im_data.shape[0]]+condet.co_dim)
-	im_rec = np.zeros([im_data.shape[0]]+condet.co_dim)
-	im_theta = np.zeros([im_data.shape[0], 6])
-	im_theta_stn = np.zeros([im_data.shape[0], 6])
-	im_theta_init = np.zeros([1, 6])
-	im_logits = np.zeros([im_data.shape[0],1])
+	im_att = np.zeros([im_data.shape[0], condet.stn_num]+condet.co_dim)
+	im_theta = np.zeros([im_data.shape[0], condet.stn_num, 6])
+	im_theta_stn = np.zeros([im_data.shape[0], condet.stn_num, 6])
+	im_theta_init = np.zeros([condet.stn_num, 6])
+	im_logits = np.zeros([im_data.shape[0], condet.stn_num]) if not att_co else \
+		np.zeros([im_data.shape[0], 1])
 	for batch_start in range(0, im_data.shape[0], batch_size):
 		batch_end = batch_start + batch_size
 		batch_im = im_data[batch_start:batch_end, ...]
 		batch_z = z_data[batch_start:batch_end] if z_data is not None else z_data
 		if not att_co:
-			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
-				im_att[batch_start:batch_end, ...], im_logits[batch_start:batch_end, ...], \
-				im_theta[batch_start:batch_end, ...], im_theta_stn[batch_start:batch_end, ...], \
-				im_theta_init[...] = condet.step(batch_im, att_only_im=True, z_data=batch_z)
+			att, logits, theta, theta_stn, theta_init = \
+				condet.step(batch_im, att_only_im=True, z_data=batch_z)
+			im_att[batch_start:batch_end, ...] = att.reshape([-1, condet.stn_num]+condet.co_dim)
+			im_logits[batch_start:batch_end, ...] = logits.reshape([-1, condet.stn_num])
+			im_theta[batch_start:batch_end, ...] = theta.reshape([-1, condet.stn_num, 6])
+			im_theta_stn[batch_start:batch_end, ...] = theta_stn.reshape([-1, condet.stn_num, 6])
+			im_theta_init[...] = theta_init.reshape([condet.stn_num, 6])
 		else:
-			im_trans[batch_start:batch_end, ...], im_rec[batch_start:batch_end, ...], \
-				im_logits[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
-	return im_trans, im_rec, im_att, im_logits.reshape([-1]), im_theta, im_theta_stn, im_theta_init
+			im_logits[batch_start:batch_end, ...] = condet.step(batch_im, att_only_co=True)
+	return im_att, im_logits, im_theta, im_theta_stn, im_theta_init
 
 '''
 Generate transformation.
@@ -1332,7 +1328,7 @@ def bbox_to_att(bboxes, im_size):
 Computes the D logits (mean and std) on by running condet on im_data as content
 '''
 def compute_dscore_co(condet, im_data, sample_size=1000):
-	_, _, _, logits, _, _, _ = condet_att(condet, im_data[:sample_size, ...], att_co=True)
+	_, logits, _, _, _ = condet_att(condet, im_data[:sample_size, ...], att_co=True)
 	top_logits = logits
 	logits_mean = np.mean(top_logits)
 	logits_std = np.std(top_logits)
@@ -1381,10 +1377,10 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 			for l in g_logits[0:draw_size]:
 				print >>fs, '\t'.join(map(str_round, l))
 
-		if co_data is not None:
-			co_samples = co_data[0:draw_size, ...]
-			co_g_samples, co_rec, _, _, _, _, _ = condet_att(condet, co_samples, att_co=True)
-			draw_co(co_samples, co_g_samples, co_rec, draw_path+'_co.png')
+		#if co_data is not None:
+		#	co_samples = co_data[0:draw_size, ...]
+		#	co_g_samples, co_rec, _, _, _, _, _ = condet_att(condet, co_samples, att_co=True)
+		#	draw_co(co_samples, co_g_samples, co_rec, draw_path+'_co.png')
 		#draw_im_att(r_samples[0:draw_size, ...], r_bboxes[0:draw_size], draw_path, 
 		#	g_samples[0:draw_size, ...], g_rec[0:draw_size, ...], g_att[0:draw_size, ...])
 
@@ -1450,10 +1446,10 @@ if __name__ == '__main__':
 	### mnist with noise background
 	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
 	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], empty_chance=0.2)
+	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], empty_chance=0.0)
 	mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
-		label=mnist_val_data[1], co_per_class=10, empty_chance=0.2)
-	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0], empty_chance=0.2)
+		label=mnist_val_data[1], co_per_class=10, empty_chance=0.0)
+	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0], empty_chance=0.0)
 	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
 	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
 	

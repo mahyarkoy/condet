@@ -156,17 +156,26 @@ class Condet:
 
 			### build generators (encoders)
 			self.im_g_layer = self.build_gen(self.stn_layer, self.train_phase, 'im_gen')
-			self.co_g_layer = self.build_gen(self.co_input, self.train_phase, 'co_gen', share=True)
+			#self.co_g_layer = self.build_gen(self.co_input, self.train_phase, 'co_gen', share=True)
 
 			### use reconstructors (decoders)
 			self.im_rec_layer = self.build_gen(self.im_g_layer, self.train_phase, 'co_gen', share=True, reuse=True)
-			self.co_rec_layer = self.build_gen(self.co_g_layer, self.train_phase, 'im_gen', share=True, reuse=True)
+			#self.co_rec_layer = self.build_gen(self.co_g_layer, self.train_phase, 'im_gen', share=True, reuse=True)
 
 			### build discriminator (critic)
 			self.co_r_logits, self.co_r_hidden = self.build_dis(self.co_input, self.train_phase, 'co_dis')
 			self.co_g_logits, self.co_g_hidden = self.build_dis(self.im_g_layer, self.train_phase, 'co_dis', reuse=True)
-			self.im_r_logits, self.im_r_hidden = self.build_dis(tf.stop_gradient(self.stn_layer), self.train_phase, 'im_dis')
-			self.im_g_logits, self.im_g_hidden = self.build_dis(self.co_g_layer, self.train_phase, 'im_dis', reuse=True)
+			#self.im_r_logits, self.im_r_hidden = self.build_dis(tf.stop_gradient(self.stn_layer), self.train_phase, 'im_dis')
+			#self.im_g_logits, self.im_g_hidden = self.build_dis(self.co_g_layer, self.train_phase, 'im_dis', reuse=True)
+
+			### build attention over multiple stns
+			self.g_multi_att = self.build_multi_att(self.co_g_hidden, self.train_phase)
+			### use greedy attention over multiple stns
+			#self.co_g_logits_re = tf.reshape(self.co_g_logits, [-1, self.stn_num])
+			#co_g_max = tf.reduce_max(self.co_g_logits_re, axis=1, keepdims=True)
+			#self.g_multi_att = tf.stop_gradient(
+			#	tf.cast(tf.equal(self.co_g_logits_re, co_g_max), tf_dtype))
+			#self.g_multi_att = tf.ones_like(self.g_multi_att, dtype=tf_dtype) / self.stn_num
 
 			### build batch attention, shape: (B, k, k, 1)
 			#self.r_att = self.build_att(self.r_hidden, self.train_phase)
@@ -198,39 +207,51 @@ class Condet:
 			#print '>>> g_att_gt shape: ', g_att_gt.get_shape().as_list()
 			##self.g_att = g_att_gt
 
-			### real gen manifold interpolation
-			int_rand = tf.random_uniform([tf.shape(self.im_g_layer)[0]], minval=0.0, maxval=1.0, dtype=tf_dtype)
+			### random vars for real gen manifold interpolation
+			int_rand = tf.random_uniform([tf.shape(self.im_input)[0]], minval=0.0, maxval=1.0, dtype=tf_dtype)
 			int_rand = tf.reshape(int_rand, [-1, 1, 1, 1])
-			co_rg_layer = (1.0 - int_rand) * self.im_g_layer + int_rand * self.co_input
+			idx_rand = tf.random_uniform([tf.shape(self.im_input)[0]], minval=0, maxval=self.stn_num, dtype=tf.int32)
+			### select one stn for each image: im_g_layer_sub shape (B, H, W, C)
+			z_1hot_stn = tf.reshape(tf.one_hot(idx_rand, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1, 1, 1])
+			z_map_stn = tf.tile(z_1hot_stn, [1, 1]+self.co_dim)
+			im_g_layer_sub = tf.reduce_sum(tf.reshape(self.im_g_layer, [-1, self.stn_num]+self.co_dim) * z_map_stn, axis=1)
+			### real gen manifold interpolation
+			co_rg_layer = (1.0 - int_rand) * im_g_layer_sub + int_rand * self.co_input
 			co_rg_logits, _ = self.build_dis(co_rg_layer, self.train_phase, 'co_dis', reuse=True)
-			im_rg_layer = (1.0 - int_rand) * self.co_g_layer + int_rand * self.stn_layer
-			im_rg_logits, _ = self.build_dis(im_rg_layer, self.train_phase, 'im_dis', reuse=True)
+			#im_rg_layer = (1.0 - int_rand) * self.co_g_layer + int_rand * self.stn_layer
+			#im_rg_logits, _ = self.build_dis(im_rg_layer, self.train_phase, 'im_dis', reuse=True)
 
 			### build d losses
 			self.co_d_r_loss, self.co_d_g_loss, self.co_gp_loss, self.co_grad_norm = \
 				self.build_dis_loss(self.co_r_logits, self.co_g_logits, co_rg_logits, co_rg_layer)
 
-			self.im_d_r_loss, self.im_d_g_loss, self.im_gp_loss, self.im_grad_norm = \
-				self.build_dis_loss(self.im_r_logits, self.im_g_logits, im_rg_logits, im_rg_layer)
+			#self.im_d_r_loss, self.im_d_g_loss, self.im_gp_loss, self.im_grad_norm = \
+			#	self.build_dis_loss(self.im_r_logits, self.im_g_logits, im_rg_logits, im_rg_layer)
 
 			### d loss mean simple (no batch)
-			self.co_d_loss_mean = tf.reduce_mean(self.co_d_r_loss + self.co_d_g_loss) + \
+			self.co_d_loss_mean = \
+				tf.reduce_mean(self.co_d_r_loss + \
+					tf.reduce_sum(self.g_multi_att * \
+						tf.reshape(self.co_d_g_loss, [-1, self.stn_num]), axis=1, keepdims=True)) + \
 				self.gp_loss_weight * tf.reduce_mean(self.co_gp_loss)
 
-			self.im_d_loss_mean = tf.reduce_mean(self.im_d_r_loss + self.im_d_g_loss) + \
-				self.gp_loss_weight * tf.reduce_mean(self.im_gp_loss)
+			#self.im_d_loss_mean = tf.reduce_mean(self.im_d_r_loss + self.im_d_g_loss) + \
+			#	self.gp_loss_weight * tf.reduce_mean(self.im_gp_loss)
 
-			self.d_loss_total = self.co_d_loss_mean + self.im_dg_loss_weight * self.im_d_loss_mean
+			self.d_loss_total = self.co_d_loss_mean #+ self.im_dg_loss_weight * self.im_d_loss_mean
 
 			### build g loss and rec losses
-			self.co_g_loss, self.im_rec_loss, self.im_g_init_loss, self.co_g_gp_loss = self.build_gen_loss(self.co_g_logits, 
-				self.stn_layer, self.im_g_layer, self.im_rec_layer, self.im_input, self.theta)
-			self.im_g_loss, self.co_rec_loss, self.co_g_init_loss, _ = self.build_gen_loss(self.im_g_logits, 
-				self.co_input, self.co_g_layer, self.co_rec_layer)
+			self.co_g_loss, self.im_rec_loss, self.im_g_init_loss, self.co_g_gp_loss = \
+				self.build_gen_loss(self.co_g_logits, 
+					self.stn_layer, self.im_g_layer, self.im_rec_layer, self.im_input, self.theta)
+			#self.im_g_loss, self.co_rec_loss, self.co_g_init_loss, _ = self.build_gen_loss(self.im_g_logits, 
+			#	self.co_input, self.co_g_layer, self.co_rec_layer)
 
 			### g loss mean simple (no batch)
-			self.co_g_loss_mean = tf.reduce_mean(self.co_g_loss)
-			self.im_g_loss_mean = tf.reduce_mean(self.im_g_loss)
+			self.co_g_loss_mean = \
+				tf.reduce_mean(tf.reduce_sum(self.g_multi_att * \
+					tf.reshape(self.co_g_loss, [-1, self.stn_num]), axis=1))
+			#self.im_g_loss_mean = tf.reduce_mean(self.im_g_loss)
 
 			### g_att and grad logs
 			#g_att_grad = tf.gradients(self.g_loss_mean, self.g_att)
@@ -251,12 +272,13 @@ class Condet:
 			##	tf.gradients(self.g_loss, self.g_layer), [-1, np.prod(self.co_dim)]), axis=1)
 
 			### g loss combination
-			self.g_loss_total = self.co_g_loss_mean + self.im_dg_loss_weight * self.im_g_loss_mean + \
+			self.g_loss_total = self.co_g_loss_mean + \
 				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
-				self.stn_scale_loss_weight * self.stn_scale_loss + \
-				self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss) + \
-				self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)# + \
+				self.stn_scale_loss_weight * self.stn_scale_loss
+				#self.im_dg_loss_weight * self.im_g_loss_mean
+				#self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss)
+				#self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)
 				#self.g_gp_loss_weight * tf.reduce_mean(self.co_g_gp_loss)
 
 			### collect params
@@ -328,14 +350,14 @@ class Condet:
 			### loss summaries **g_num**
 			co_g_loss_sum = tf.summary.scalar("co_g_loss", self.co_g_loss_mean)
 			co_d_loss_sum = tf.summary.scalar("co_d_loss", self.co_d_loss_mean)
-			im_g_loss_sum = tf.summary.scalar("im_g_loss", self.im_g_loss_mean)
-			im_d_loss_sum = tf.summary.scalar("im_d_loss", self.im_d_loss_mean)
-			co_rec_loss_sum = tf.summary.scalar("co_rec_loss", self.co_rec_loss)
-			im_rec_loss_sum = tf.summary.scalar("im_rec_loss", self.im_rec_loss)
+			#im_g_loss_sum = tf.summary.scalar("im_g_loss", self.im_g_loss_mean)
+			#im_d_loss_sum = tf.summary.scalar("im_d_loss", self.im_d_loss_mean)
+			#co_rec_loss_sum = tf.summary.scalar("co_rec_loss", self.co_rec_loss)
+			#im_rec_loss_sum = tf.summary.scalar("im_rec_loss", self.im_rec_loss)
 			g_loss_sum = tf.summary.scalar("g_loss_total", self.g_loss_total)
 			d_loss_sum = tf.summary.scalar("d_loss_total", self.d_loss_total)
-			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, co_g_loss_sum, co_d_loss_sum, 
-				im_g_loss_sum, im_d_loss_sum, co_rec_loss_sum, im_rec_loss_sum])
+			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, co_g_loss_sum, co_d_loss_sum]) 
+				#im_g_loss_sum, im_d_loss_sum, co_rec_loss_sum, im_rec_loss_sum])
 				#sh_sum, th_sum, sw_sum, tw_sum])
 
 	def build_dis_loss(self, r_logits, g_logits, rg_logits, rg_layer):
@@ -478,6 +500,15 @@ class Condet:
 			#o_soft = tf.nn.sigmoid(o)
 		return o_soft
 
+	def build_multi_att(self, hidden_layer, train_phase, reuse=False):
+		act = self.d_act
+		with tf.variable_scope('s_net'):
+			flat = tf.contrib.layers.flatten(tf.stop_gradient(hidden_layer))
+			o = dense(flat, 1, 'multi_att_fc')
+			o_re = tf.reshape(o, [-1, self.stn_num])
+			att = tf.nn.softmax(o_re)
+		return tf.nn.softmax(o_re)
+
 	def build_stn(self, data_layer, z_data, train_phase, reuse=False):
 		#scale, trans = fc(6)
 		act = self.s_act
@@ -510,10 +541,14 @@ class Condet:
 					tw = 2.0*tf.sigmoid(dense(flat, 1, 'wtrans', reuse=reuse))
 
 					### biases
-					sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, initializer=1.0)
-					sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, initializer=1.0)
-					th_b = tf.get_variable('htrans_bias', dtype=tf_dtype, initializer=-1.0)
-					tw_b = tf.get_variable('wtrans_bias', dtype=tf_dtype, initializer=-1.0)
+					sh_b = tf.get_variable('hscale_bias', dtype=tf_dtype, 
+						initializer=1.0)
+					sw_b = tf.get_variable('wscale_bias', dtype=tf_dtype, 
+						initializer=1.0)
+					th_b = tf.get_variable('htrans_bias', 
+						dtype=tf_dtype, initializer=-1.0+np.random.uniform(-0.5, 0.5))
+					tw_b = tf.get_variable('wtrans_bias', 
+						dtype=tf_dtype, initializer=-1.0+np.random.uniform(-0.5, 0.5))
 
 					### theta init setup
 					z = tf.zeros([tf.shape(data_layer)[0], 1], dtype=tf_dtype)
@@ -535,19 +570,19 @@ class Condet:
 					theta_init_list.append(theta_init)
 					theta_stn_list.append(theta_stn)
 
-			### TODO: log theta better
-			self.theta_stn = theta_stn_list[-1]
-			self.theta_init = theta_init_list[-1]
-
 			### choose the theta and stn based on z input
-			z_1hot_stn = tf.reshape(tf.one_hot(z_data, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1, 1, 1])
-			z_map_stn = tf.tile(z_1hot_stn, [1, 1]+self.co_dim)
+			#z_1hot_stn = tf.reshape(tf.one_hot(z_data, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1, 1, 1])
+			#z_map_stn = tf.tile(z_1hot_stn, [1, 1]+self.co_dim)
+			#z_1hot_theta = tf.reshape(tf.one_hot(z_data, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1])
+			#z_map_theta = tf.tile(z_1hot_theta, [1, 1, 6])
+			#stn_o = tf.reduce_sum(tf.stack(stn_list, axis=1) * z_map_stn, axis=1)
+			#theta_o = tf.reduce_sum(tf.stack(theta_list, axis=1) * z_map_theta, axis=1)
 
-			z_1hot_theta = tf.reshape(tf.one_hot(z_data, self.stn_num, dtype=tf_dtype), [-1, self.stn_num, 1])
-			z_map_theta = tf.tile(z_1hot_theta, [1, 1, 6])
-
-			stn_o = tf.reduce_sum(tf.stack(stn_list, axis=1) * z_map_stn, axis=1)
-			theta_o = tf.reduce_sum(tf.stack(theta_list, axis=1) * z_map_theta, axis=1)
+			### stack stn and theta: (B*stn_num, H, W, C) and (B*stn_num, 6)
+			stn_o = tf.reshape(tf.stack(stn_list, axis=1), [-1,]+self.co_dim)
+			theta_o = tf.reshape(tf.stack(theta_list, axis=1), [-1, 6])
+			self.theta_stn = tf.reshape(tf.stack(theta_stn_list, axis=1), [-1, 6])
+			self.theta_init = tf.reshape(tf.stack(theta_init_list, axis=1), [-1, 6])
 			return stn_o, theta_o
 
 	def start_session(self):
@@ -614,16 +649,16 @@ class Condet:
 		### only forward stn on im_data using im_input
 		if att_only_im:
 			feed_dict = {self.im_input: im_data, self.z_input: z_data, self.train_phase: False}
-			res_list = [self.im_g_layer, self.im_rec_layer, self.stn_layer, self.co_g_logits, self.theta, self.theta_stn, self.theta_init]
+			res_list = [self.stn_layer, self.co_g_logits, self.theta, self.theta_stn, self.theta_init]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			return res_list
 
 		### only forward generator on co_data using im_input
 		if att_only_co:
 			feed_dict = {self.co_input: im_data, self.train_phase: False}
-			res_list = [self.co_g_layer, self.co_rec_layer, self.co_r_logits]
+			res_list = [self.co_r_logits]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
-			return res_list
+			return res_list[0]
 
 		### only forward generator on im_data
 		if gen_only:
@@ -635,8 +670,7 @@ class Condet:
 		if disc_only:
 			feed_dict = {self.co_input: co_data, self.im_input: im_data,  self.z_input: z_data, self.train_phase: False}
 			#res_list = [self.rg_grad_norm_output, self.d_r_loss_mean_sep, self.g_loss_mean_sep]
-			res_list = [(self.co_grad_norm + self.im_dg_loss_weight * self.im_grad_norm) \
-						/ (1. + self.im_dg_loss_weight)]
+			res_list = [self.co_grad_norm]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 			#return res_list[0].flatten(), res_list[1].flatten(), res_list[2].flatten()
 			return res_list[0].flatten(), 0., 0.
