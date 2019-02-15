@@ -1269,16 +1269,17 @@ def eval_multi_bbox(im_bbox, stn_bbox, stn_logits, conf_th=None, iou_th=0.5):
 		total_pos += stnbb.shape[0]
 		total_true += imbb.shape[0]
 		stnbb_count = stnbb.shape[0]
-		for ib in imbb:
-			if stnbb.shape[0] == 0:
+		### find match for each stnbb (stnbb must be in the order of decreasing confidence)
+		for sb in stnbb:
+			if imbb.shape[0] == 0:
 				break
-			iou_list = [compute_iou(ib, sb) for sb in stnbb]
+			iou_list = [compute_iou(ib, sb) for ib in imbb]
 			match_id = np.argmax(iou_list)
 			match_iou = iou_list[match_id]
 			iou_sum += match_iou
 			true_pos += 1 if match_iou > iou_th else 0
-			### remove the detected stn bbox (penalizes redundant correct stn bboxes)
-			stnbb = np.delete(stnbb, match_id, axis=0)
+			### remove the best im bbox (remove even if not matched, because next sb has lower conf anyway)
+			imbb = np.delete(imbb, match_id, axis=0)
 		mean_iou = 1.*iou_sum/(stnbb_count+eps)
 		mean_iou_list.append(mean_iou)
 
@@ -1362,6 +1363,9 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	else:
 		dscore_mean, dscore_std = condet.update_const_vars()
 
+	### confidence threshold **eval
+	conf_th = None #dscore_mean-dscore_std
+
 	### prune bboxes
 	g_bbox, g_att, g_logits, order_list = \
 		prune_multi_stn(condet, g_bbox, g_att, g_logits, order_list, conf_th=None)
@@ -1370,7 +1374,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	if draw_path is not None:
 		draw_multi_stn(r_samples[:draw_size], r_bboxes[:draw_size], 
 			g_bbox[:draw_size], g_att[:draw_size], order_list[:draw_size], draw_path+'_im.png',
-			stn_logits=g_logits[:draw_size], conf_th=dscore_mean-dscore_std)
+			stn_logits=g_logits[:draw_size], conf_th=conf_th)
 		### save logits
 		str_round = lambda x: str(round(x, 3))
 		with open(draw_path+'_logits.txt', 'w+') as fs:
@@ -1389,7 +1393,7 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 
 	### compute iou, precesion and recall
 	iou_mean, iou_std, precision, recall = \
-		eval_multi_bbox(r_bboxes, g_bbox, g_logits, conf_th=dscore_mean-dscore_std)
+		eval_multi_bbox(r_bboxes, g_bbox, g_logits, conf_th=conf_th)
 	#g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
 	#iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
@@ -1523,10 +1527,11 @@ if __name__ == '__main__':
 	GAN SETUP SECTION
 	'''
 	### train condet
-	train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
+	#train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
 
-	### load condet
-	# condet.load(condet_path % run_seed)
+	### load condet **eval
+	condet_path = '/media/evl/Public/Mahyar/condet_logs/25_logs_stnmulti1_ggp1_mnistmulti3_rnbg_10shot_adamb9bb999/run_%d/snapshots/model_83333_500000.h5'
+	condet.load(condet_path % run_seed)
 
 	'''
 	GAN DATA EVAL

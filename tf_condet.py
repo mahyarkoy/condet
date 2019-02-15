@@ -84,7 +84,7 @@ class Condet:
 		self.stn_scale_loss_weight = 1000.0
 
 		### network parameters
-		self.stn_num = 5
+		self.stn_num = 1
 		self.z_dim = 100
 		self.z_range = 1.0
 		self.data_dim = [64, 64, 3]
@@ -169,12 +169,13 @@ class Condet:
 			#self.im_g_logits, self.im_g_hidden = self.build_dis(self.co_g_layer, self.train_phase, 'im_dis', reuse=True)
 
 			### build attention over multiple stns
-			self.g_multi_att = self.build_multi_att(self.co_g_hidden, self.train_phase)
+			#self.g_multi_att = self.build_multi_att(self.co_g_hidden, self.train_phase)
 			### use greedy attention over multiple stns
-			#self.co_g_logits_re = tf.reshape(self.co_g_logits, [-1, self.stn_num])
-			#co_g_max = tf.reduce_max(self.co_g_logits_re, axis=1, keepdims=True)
-			#self.g_multi_att = tf.stop_gradient(
-			#	tf.cast(tf.equal(self.co_g_logits_re, co_g_max), tf_dtype))
+			self.co_g_logits_re = tf.reshape(self.co_g_logits, [-1, self.stn_num])
+			co_g_max = tf.reduce_max(self.co_g_logits_re, axis=1, keepdims=True)
+			self.g_multi_att = tf.stop_gradient(
+				tf.cast(tf.equal(self.co_g_logits_re, co_g_max), tf_dtype))
+			### use average attention
 			#self.g_multi_att = tf.ones_like(self.g_multi_att, dtype=tf_dtype) / self.stn_num
 
 			### build batch attention, shape: (B, k, k, 1)
@@ -287,6 +288,11 @@ class Condet:
 			self.a_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "a_net")
 			self.i_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "i_net")
 			self.s_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "s_net")
+			self.s_vars_bn = list()
+			for v in tf.global_variables():
+				if 's_net' in v.name and 'bn' in v.name and 'beta' not in v.name:
+					self.s_vars_bn.append(v)
+			print '>>> S_VARS_BN: ', self.s_vars_bn
 
 			### compute stat of weights
 			self.nan_vars = 0.
@@ -323,9 +329,9 @@ class Condet:
 				self.s_vars_count += int(np.prod(v.get_shape()))
 
 			### build optimizers
-			update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-			print '>>> update_ops list: ', update_ops
-			with tf.control_dependencies(update_ops):
+			self.update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+			print '>>> update_ops list: ', self.update_ops
+			with tf.control_dependencies(self.update_ops):
 				self.d_opt = tf.train.AdamOptimizer(
 					self.d_lr, beta1=self.d_beta1, beta2=self.d_beta2).minimize(
 					self.d_loss_total, var_list=self.d_vars)
@@ -333,7 +339,7 @@ class Condet:
 				with tf.control_dependencies([self.theta_decay_opt]):
 					self.g_opt = tf.train.AdamOptimizer(
 						self.g_lr, beta1=self.g_beta1, beta2=self.g_beta2).minimize(
-						self.g_loss_total, var_list=self.g_vars+self.s_vars)
+						self.g_loss_total, var_list=self.g_vars+self.s_vars+self.a_vars)
 				#self.a_opt = tf.train.AdamOptimizer(
 				#	self.a_lr, beta1=self.a_beta1, beta2=self.a_beta2).minimize(
 				#	self.g_loss_total, var_list=self.a_vars)
@@ -486,23 +492,9 @@ class Condet:
 				#o = conv2d(h3, 1, k_h=1, k_w=1, scope='conv4', reuse=reuse)
 		return o, h3
 
-	def build_att(self, hidden_layer, train_phase, reuse=False):
-		act = self.a_act
-		bn = tf.contrib.layers.batch_norm
-		ln = tf.contrib.layers.layer_norm
-		with tf.variable_scope('a_net'):
-			#h1 = act(conv2d(hidden_layer, 32, d_h=2, d_w=2, scope='conv1', reuse=reuse))
-			#h2 = act(bn(conv2d(h1, 64, d_h=2, d_w=2, scope='conv2', reuse=reuse), reuse=reuse, scope='bn2', is_training=train_phase))
-			#o = conv2d(h2, 1, d_h=2, d_w=2, scope='conv3', reuse=reuse)
-			h1 = act(bn(conv2d(hidden_layer, 128, k_h=1, k_w=1, scope='conv1', reuse=reuse), reuse=reuse, scope='bn1', is_training=train_phase))
-			o = conv2d(h1, 1, k_h=1, k_w=1, scope='conv2', reuse=reuse)
-			o_soft = tf.reshape(tf.nn.softmax(tf.contrib.layers.flatten(o)), tf.shape(o))
-			#o_soft = tf.nn.sigmoid(o)
-		return o_soft
-
 	def build_multi_att(self, hidden_layer, train_phase, reuse=False):
 		act = self.d_act
-		with tf.variable_scope('s_net'):
+		with tf.variable_scope('a_net'):
 			flat = tf.contrib.layers.flatten(tf.stop_gradient(hidden_layer))
 			o = dense(flat, 1, 'multi_att_fc')
 			o_re = tf.reshape(o, [-1, self.stn_num])
@@ -588,13 +580,16 @@ class Condet:
 	def start_session(self):
 		self.saver = tf.train.Saver(tf.global_variables(), 
 			keep_checkpoint_every_n_hours=1, max_to_keep=5)
+		### load only
+		self.saver_var_only = tf.train.Saver(
+			self.s_vars_bn + self.s_vars + self.d_vars) #+self.a_vars+[self.dscore_mean, self.dscore_std])
 		self.writer = tf.summary.FileWriter(self.log_dir, self.sess.graph)
 
 	def save(self, fname):
 		self.saver.save(self.sess, fname)
 
 	def load(self, fname):
-		self.saver.restore(self.sess, fname)
+		self.saver_var_only.restore(self.sess, fname)
 
 	def write_sum(self, sum_str, counter):
 		self.writer.add_summary(sum_str, counter)
