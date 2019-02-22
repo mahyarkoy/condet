@@ -31,6 +31,7 @@ import scipy.io as sio
 import skimage.io as skio
 import glob
 from PIL import Image
+from calculate_mean_ap import main_mean_ap, get_avg_precision_at_iou
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID" # so the IDs match nvidia-smi
 os.environ["CUDA_VISIBLE_DEVICES"] = "1" # "0, 1" for multiple
@@ -51,9 +52,9 @@ import tf_condet
 
 ### global colormap set (last row is black)
 black_color = np.array([[0., 0., 0., 1.]])
-global_cmap = mat_cm.get_cmap('Set1')
-global_color_locs = np.arange(9) / 9.
-global_color_set = global_cmap(global_color_locs)
+global_cmap = mat_cm.get_cmap('rainbow')
+global_color_locs = np.arange(10) / 10.
+global_color_set = global_cmap(global_color_locs[::-1])
 global_color_set = np.concatenate([global_color_set, black_color], axis=0)
 
 ### global tab colormap set
@@ -748,7 +749,7 @@ im_att: list of non-max suppressed stn outputs per image
 im_logits: list of non-max suppressed d scores per image
 order_list: list where each element is an array containing the ids of the stns used, per image
 '''
-def prune_multi_stn(condet, im_bbox, im_att, im_logits, order_list, conf_th=None, iou_th=0.5):
+def prune_multi_stn(condet, im_bbox, im_att, im_logits, order_list, conf_th=None, iou_th=0.2):
 	data_size = len(im_bbox)
 	### apply non-max suppression and low confidence cut (prune bboxes)
 	for i in range(data_size):
@@ -858,6 +859,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	batch_size = 32
 	eval_step = eval_int
 	draw_step = eval_int
+	snap_step = max_itr_total // 10
 
 	### logs initi
 	g_logs = list()
@@ -877,8 +879,10 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	recall_logs = list()
 	logits_logs = list()
 	logits_r_logs = list()
+	ap_logs = list()
 
 	### training inits
+	ap_best = 0.
 	d_itr = 0
 	g_itr = 0
 	itr_total = 0
@@ -933,6 +937,13 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					eval_condet(condet, im_data, im_bbox, draw_path, co_data, const_update=True)
 				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _, _, _ = \
 					eval_condet(condet, test_im, test_bbox)
+
+				### AP eval
+				ap = eval_mean_ap(condet, test_im, test_bbox)
+				ap_logs.append(ap)
+				if ap > ap_best:
+					ap_best = ap
+					condet.save(log_path_snap+'/model_best.h5')
 
 				### update logs
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
@@ -989,11 +1000,12 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				itr_total += 1
 				d_update_flag = True if g_itr % g_updates == 0 else False
 
+			### save network once per snap step total iterations
+			if itr_total % snap_step == 0 or itr_total >= max_itr_total:
+				condet.save(log_path_snap+'/model_%d_%d.h5' % (g_itr, itr_total))
+
 			if itr_total >= max_itr_total:
 				break
-
-		### save network every epoch
-		condet.save(log_path_snap+'/model_%d_%d.h5' % (g_itr, itr_total))
 
 		### plot condet evaluation plot every epoch **g_num**
 		if len(eval_logs) < 2:
@@ -1063,6 +1075,20 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		ax.set_ylabel('Values')
 		ax.legend(loc=0)
 		fig.savefig(log_path+'/prec_recall_test.png', dpi=300)
+		plt.close(fig)
+
+		### plot average precision
+		fig, ax = plt.subplots(figsize=(8, 6))
+		ax.clear()
+		ax.plot(itrs_logs, ap_logs)
+		ax.set_ylim(bottom=0.0, top=1.0)
+		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+		ax.grid(True, which='both', linestyle='dotted')
+		ax.set_title('Average Precision')
+		ax.set_xlabel('Iterations')
+		ax.set_ylabel('AP')
+		ax.legend(loc=0)
+		fig.savefig(log_path+'/average_prec.png', dpi=300)
 		plt.close(fig)
 
 		### plot logits
@@ -1338,7 +1364,7 @@ def compute_dscore_co(condet, im_data, sample_size=1000):
 '''
 Returns intersection over union mean and std, net_stats, and draw_im_att
 '''
-def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000, const_update=False):
+def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000, const_update=False, calc_map=False):
 	### sample and batch size
 	batch_size = 64
 	draw_size = 20
@@ -1364,11 +1390,16 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 		dscore_mean, dscore_std = condet.update_const_vars()
 
 	### confidence threshold **eval
-	conf_th = None #dscore_mean-dscore_std
+	conf_th = dscore_mean-2.*dscore_std
 
 	### prune bboxes
 	g_bbox, g_att, g_logits, order_list = \
 		prune_multi_stn(condet, g_bbox, g_att, g_logits, order_list, conf_th=None)
+
+	### compute and draw mAP
+	if calc_map:
+		draw_dir = '/'.join(draw_path.split('/')[:-1])
+		calc_mean_ap(r_bboxes, g_bbox, g_logits, draw_dir)
 
 	### draw block image of gen samples
 	if draw_path is not None:
@@ -1400,6 +1431,36 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	return iou_mean, iou_std, precision, recall, logits_mean, logits_std, \
 		net_stats, g_theta, g_theta_stn, g_theta_init
 
+def calc_mean_ap(r_boxes, g_boxes, g_scores, path):
+	im_ids = range(len(r_boxes))
+	r_bboxes_dict = dict(zip(im_ids, [b.tolist() for b in r_boxes]))
+	g_bboxes_dict = dict(zip(im_ids, 
+		[{"boxes": b.tolist(), "scores": s.tolist()} for b, s in zip(g_boxes, g_scores)]))
+	main_mean_ap(r_bboxes_dict, g_bboxes_dict, path)
+
+def eval_mean_ap(condet, im_data, bboxes, sample_size=1000):
+	### sample and batch size
+	batch_size = 64
+	
+	### collect real and gen samples
+	r_samples = im_data[0:sample_size, ...]
+	r_boxes = bboxes[0:sample_size]
+	g_boxes, g_att, g_logits, order_list, g_theta, g_theta_stn, g_theta_init = \
+		apply_multi_stn(condet, r_samples)
+
+	### prune bboxes (non max suppresion)
+	g_boxes, g_att, g_logits, order_list = \
+		prune_multi_stn(condet, g_boxes, g_att, g_logits, order_list, conf_th=None)
+
+	### prepare data
+	im_ids = range(len(r_boxes))
+	r_bboxes_dict = dict(zip(im_ids, [b.tolist() for b in r_boxes]))
+	g_bboxes_dict = dict(zip(im_ids, 
+		[{"boxes": b.tolist(), "scores": s.tolist()} for b, s in zip(g_boxes, g_logits)]))
+
+	### compute ap
+	data = get_avg_precision_at_iou(r_bboxes_dict, g_bboxes_dict, iou_thr=0.5)
+	return data['avg_prec']
 
 if __name__ == '__main__':
 	### log path setups
@@ -1527,18 +1588,19 @@ if __name__ == '__main__':
 	GAN SETUP SECTION
 	'''
 	### train condet
-	#train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
+	train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
 
 	### load condet **eval
-	condet_path = '/media/evl/Public/Mahyar/condet_logs/25_logs_stnmulti1_ggp1_mnistmulti3_rnbg_10shot_adamb9bb999/run_%d/snapshots/model_83333_500000.h5'
-	condet.load(condet_path % run_seed)
+	#condet_path = '/media/evl/Public/Mahyar/condet_logs/40_logs_attstnmulti10_avgatt_mnistmulti3_rnbg_10shot_b9bb999_allbbox/run_%d/snapshots/model_83333_500000.h5'
+	condet_path = log_path_snap + '/model_best.h5'
+	condet.load(condet_path)# % run_seed)
 
 	'''
 	GAN DATA EVAL
 	'''
-	draw_path = log_path+'/sample_final.png'
+	draw_path = log_path+'/sample_final'
 	iou_mean, iou_std, precision, recall, _, _, net_stats, _, _, _ = \
-		eval_condet(condet, test_im, test_bbox, draw_path)
+		eval_condet(condet, test_im, test_bbox, draw_path, calc_map=True)
 	print ">>> IOU mean: ", iou_mean
 	print ">>> IOU std: ", iou_std
 	print ">>> Precision: ", precision

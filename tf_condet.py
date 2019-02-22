@@ -64,11 +64,11 @@ class Condet:
 
 		### optimization parameters
 		self.g_lr = 2e-4
-		self.g_beta1 = 0.5
-		self.g_beta2 = 0.5
+		self.g_beta1 = 0.9
+		self.g_beta2 = 0.999
 		self.d_lr = 2e-4
-		self.d_beta1 = 0.5
-		self.d_beta2 = 0.5
+		self.d_beta1 = 0.9
+		self.d_beta2 = 0.999
 
 		### loss weights
 		self.gp_loss_weight = 10.0
@@ -84,7 +84,7 @@ class Condet:
 		self.stn_scale_loss_weight = 1000.0
 
 		### network parameters
-		self.stn_num = 1
+		self.stn_num = 10
 		self.z_dim = 100
 		self.z_range = 1.0
 		self.data_dim = [64, 64, 3]
@@ -168,15 +168,15 @@ class Condet:
 			#self.im_r_logits, self.im_r_hidden = self.build_dis(tf.stop_gradient(self.stn_layer), self.train_phase, 'im_dis')
 			#self.im_g_logits, self.im_g_hidden = self.build_dis(self.co_g_layer, self.train_phase, 'im_dis', reuse=True)
 
+			self.co_g_logits_re = tf.reshape(self.co_g_logits, [-1, self.stn_num])
 			### build attention over multiple stns
 			#self.g_multi_att = self.build_multi_att(self.co_g_hidden, self.train_phase)
 			### use greedy attention over multiple stns
-			self.co_g_logits_re = tf.reshape(self.co_g_logits, [-1, self.stn_num])
-			co_g_max = tf.reduce_max(self.co_g_logits_re, axis=1, keepdims=True)
-			self.g_multi_att = tf.stop_gradient(
-				tf.cast(tf.equal(self.co_g_logits_re, co_g_max), tf_dtype))
+			#co_g_max = tf.reduce_max(self.co_g_logits_re, axis=1, keepdims=True)
+			#self.g_multi_att = tf.stop_gradient(
+			#	tf.cast(tf.equal(self.co_g_logits_re, co_g_max), tf_dtype))
 			### use average attention
-			#self.g_multi_att = tf.ones_like(self.g_multi_att, dtype=tf_dtype) / self.stn_num
+			self.g_multi_att = tf.ones_like(self.co_g_logits_re, dtype=tf_dtype) / self.stn_num
 
 			### build batch attention, shape: (B, k, k, 1)
 			#self.r_att = self.build_att(self.r_hidden, self.train_phase)
@@ -578,8 +578,7 @@ class Condet:
 			return stn_o, theta_o
 
 	def start_session(self):
-		self.saver = tf.train.Saver(tf.global_variables(), 
-			keep_checkpoint_every_n_hours=1, max_to_keep=5)
+		self.saver = tf.train.Saver(tf.global_variables())
 		### load only
 		self.saver_var_only = tf.train.Saver(
 			self.s_vars_bn + self.s_vars + self.d_vars) #+self.a_vars+[self.dscore_mean, self.dscore_std])
