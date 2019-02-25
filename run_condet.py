@@ -1185,6 +1185,9 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	### save eval_t_logs
 	with open(log_path+'/iou_test_logs.cpk', 'wb+') as fs:
 		pk.dump([itrs_logs, eval_t_logs_mat], fs)
+	### save average precision logs
+	with open(log_path+'/ap_logs.cpk', 'wb+') as fs:
+		pk.dump([itrs_logs, ap_logs], fs)
 
 '''
 Sample sample_size data points from ganist.
@@ -1509,40 +1512,40 @@ if __name__ == '__main__':
 	'''
 
 	### mnist with noise background
-	mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
-	mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
-	mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], empty_chance=0.0)
-	mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
-		label=mnist_val_data[1], co_per_class=10, empty_chance=0.0)
-	mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0], empty_chance=0.0)
-	print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
-	print '>>> MNIST TEST SIZE:', mnist_test_im.shape
+	#mnist_path = '/media/evl/Public/Mahyar/Data/mnist.pkl.gz'
+	#mnist_train_data, mnist_val_data, mnist_test_data = read_mnist(mnist_path)
+	#mnist_train_bbox, mnist_train_im, mnist_train_co = prep_mnist(mnist_train_data[0], empty_chance=0.0)
+	#mnist_val_bbox, mnist_val_im, mnist_val_co = prep_mnist(mnist_val_data[0], 
+	#	label=mnist_val_data[1], co_per_class=10, empty_chance=0.0)
+	#mnist_test_bbox, mnist_test_im, mnist_test_co = prep_mnist(mnist_test_data[0], empty_chance=0.0)
+	#print '>>> MNIST TRAIN SIZE:', mnist_train_im.shape
+	#print '>>> MNIST TEST SIZE:', mnist_test_im.shape
 	
 	### dataset choice
-	train_im = mnist_train_im
-	train_bbox = mnist_train_bbox
-	train_co = mnist_val_co
+	#train_im = mnist_train_im
+	#train_bbox = mnist_train_bbox
+	#train_co = mnist_val_co
 	
-	test_im = mnist_test_im
-	test_bbox = mnist_test_bbox
+	#test_im = mnist_test_im
+	#test_bbox = mnist_test_bbox
 
 	### cub data
-	#co_num = 10
-	#test_num = 5
-	#train_num = 50
-	#cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
-	#cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
-	#print '>>> CUB CO SIZE:', cub_co_data[0].shape
-	#print '>>> CUB TEST SIZE:', cub_test_data[0].shape
-	#print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
+	co_num = 5#10
+	test_num = 5
+	train_num = 5#0
+	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
+	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
+	print '>>> CUB CO SIZE:', cub_co_data[0].shape
+	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
+	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
 
 	### dataset choice
-	#train_im = cub_train_data[0]
-	#train_bbox = cub_train_data[1]
-	#train_co = cub_co_data[0]
+	train_im = cub_train_data[0]
+	train_bbox = cub_train_data[1]
+	train_co = cub_co_data[0]
 
-	#test_im = cub_test_data[0]
-	#test_bbox = cub_test_data[1]
+	test_im = cub_test_data[0]
+	test_bbox = cub_test_data[1]
 
 	'''
 	TENSORFLOW SETUP
@@ -1591,9 +1594,9 @@ if __name__ == '__main__':
 	train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
 
 	### load condet **eval
-	#condet_path = '/media/evl/Public/Mahyar/condet_logs/40_logs_attstnmulti10_avgatt_mnistmulti3_rnbg_10shot_b9bb999_allbbox/run_%d/snapshots/model_83333_500000.h5'
+	#condet_path = '/media/evl/Public/Mahyar/condet_logs/41_logs_attstnmulti10_avgatt_cub_10shot_b9bb999_allbbox/run_%d/snapshots/model_83333_500000.h5'
 	condet_path = log_path_snap + '/model_best.h5'
-	condet.load(condet_path)# % run_seed)
+	condet.load(condet_path % run_seed)
 
 	'''
 	GAN DATA EVAL

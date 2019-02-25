@@ -69,12 +69,16 @@ class Condet:
 		self.d_lr = 2e-4
 		self.d_beta1 = 0.9
 		self.d_beta2 = 0.999
+		self.e_lr = 2e-4
+		self.e_beta1 = 0.9
+		self.e_beta2 = 0.999
 
 		### loss weights
 		self.gp_loss_weight = 10.0
 		self.rec_loss_weight = 0.0
 		self.g_init_loss_weight = 0.0
 		self.g_gp_loss_weight = 0.0
+		self.enc_loss_weight = 1.0
 
 		self.im_dg_loss_weight = 0.0
 		self.use_gen = False
@@ -87,8 +91,8 @@ class Condet:
 		self.stn_num = 10
 		self.z_dim = 100
 		self.z_range = 1.0
-		self.data_dim = [64, 64, 3]
-		self.co_dim = [32, 32, 3]
+		self.data_dim = [128, 128, 3]
+		self.co_dim = [64, 64, 3]
 		self.stn_size = self.co_dim[:2] ### co_dim
 	
 		self.d_loss_type = 'was'
@@ -135,6 +139,15 @@ class Condet:
 			### build stn
 			self.stn_layer, self.theta = self.build_stn(self.im_input, self.z_input, self.train_phase)
 			print '>>> STN shape: ', self.stn_layer.get_shape().as_list()
+
+			### theta encoder loss
+			self.enc_logits = self.build_enc(self.theta, self.train_phase)
+			stn_labels = tf.tile(tf.reshape(np.arange(self.stn_num), [1, self.stn_num]),
+					[tf.shape(self.im_input)[0], 1])
+			self.enc_loss = tf.reduce_mean(
+				tf.nn.softmax_cross_entropy_with_logits(
+					labels=tf.one_hot(tf.reshape(stn_labels, [-1]), self.stn_num, 
+					dtype=tf_dtype), logits=self.enc_logits))
 
 			### stn init penalty
 			self.stn_init_loss = tf.reduce_mean(
@@ -276,7 +289,8 @@ class Condet:
 			self.g_loss_total = self.co_g_loss_mean + \
 				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
-				self.stn_scale_loss_weight * self.stn_scale_loss
+				self.stn_scale_loss_weight * self.stn_scale_loss + \
+				self.enc_loss_weight * self.enc_loss
 				#self.im_dg_loss_weight * self.im_g_loss_mean
 				#self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss)
 				#self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)
@@ -287,6 +301,7 @@ class Condet:
 			self.d_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "d_net")
 			self.a_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "a_net")
 			self.i_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "i_net")
+			self.e_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "e_net")
 			self.s_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, "s_net")
 			self.s_vars_bn = list()
 			for v in tf.global_variables():
@@ -340,6 +355,11 @@ class Condet:
 					self.g_opt = tf.train.AdamOptimizer(
 						self.g_lr, beta1=self.g_beta1, beta2=self.g_beta2).minimize(
 						self.g_loss_total, var_list=self.g_vars+self.s_vars+self.a_vars)
+
+				self.e_opt = tf.train.AdamOptimizer(
+					self.e_lr, beta1=self.e_beta1, beta2=self.e_beta2).minimize(
+					self.enc_loss, var_list=self.e_vars)
+
 				#self.a_opt = tf.train.AdamOptimizer(
 				#	self.a_lr, beta1=self.a_beta1, beta2=self.a_beta2).minimize(
 				#	self.g_loss_total, var_list=self.a_vars)
@@ -362,7 +382,11 @@ class Condet:
 			#im_rec_loss_sum = tf.summary.scalar("im_rec_loss", self.im_rec_loss)
 			g_loss_sum = tf.summary.scalar("g_loss_total", self.g_loss_total)
 			d_loss_sum = tf.summary.scalar("d_loss_total", self.d_loss_total)
-			self.summary = tf.summary.merge([g_loss_sum, d_loss_sum, co_g_loss_sum, co_d_loss_sum]) 
+			e_loss_sum = tf.summary.scalar("enc_loss", self.enc_loss)
+			self.summary = tf.summary.merge(
+				[g_loss_sum, d_loss_sum, 
+				co_g_loss_sum, co_d_loss_sum,
+				e_loss_sum]) 
 				#im_g_loss_sum, im_d_loss_sum, co_rec_loss_sum, im_rec_loss_sum])
 				#sh_sum, th_sum, sw_sum, tw_sum])
 
@@ -500,6 +524,16 @@ class Condet:
 			o_re = tf.reshape(o, [-1, self.stn_num])
 			att = tf.nn.softmax(o_re)
 		return tf.nn.softmax(o_re)
+
+	def build_enc(self, theta_layer, train_phase, reuse=False):
+		act = self.d_act
+		bn = tf.contrib.layers.batch_norm
+		with tf.variable_scope('e_net'):
+			loc = tf.stack([theta_layer[:, 2], theta_layer[:, 5]], axis=1)
+			h1 = act(bn(dense(loc, 16, 'ehfc', reuse=reuse), 
+					reuse=reuse, is_training=train_phase, scope='bn'))
+			o = dense(h1, self.stn_num, 'efc', reuse=reuse)
+		return o
 
 	def build_stn(self, data_layer, z_data, train_phase, reuse=False):
 		#scale, trans = fc(6)
@@ -676,6 +710,9 @@ class Condet:
 			res_list = [self.im_g_layer, self.summary, self.d_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 		else:
+			### encoder opt
+			self.sess.run(self.e_opt, feed_dict=feed_dict)
+			### stn opt
 			res_list = [self.im_g_layer, self.summary, self.g_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 		
