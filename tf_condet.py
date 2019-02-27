@@ -307,7 +307,7 @@ class Condet:
 			for v in tf.global_variables():
 				if 's_net' in v.name and 'bn' in v.name and 'beta' not in v.name:
 					self.s_vars_bn.append(v)
-			print '>>> S_VARS_BN: ', self.s_vars_bn
+			#print '>>> S_VARS_BN: ', self.s_vars_bn
 
 			### compute stat of weights
 			self.nan_vars = 0.
@@ -612,7 +612,7 @@ class Condet:
 			return stn_o, theta_o
 
 	def start_session(self):
-		self.saver = tf.train.Saver(tf.global_variables())
+		self.saver = tf.train.Saver(tf.global_variables(), max_to_keep=100)
 		### load only
 		self.saver_var_only = tf.train.Saver(
 			self.s_vars_bn + self.s_vars + self.d_vars) #+self.a_vars+[self.dscore_mean, self.dscore_std])

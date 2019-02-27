@@ -196,12 +196,13 @@ def read_cub_file(fname):
 	return vals
 
 '''
-Reading CUB dataset.
+Creating a CUB dataset.
+Returns the indices on images.txt for co, test, and train splits.
 co_num, test_num, train_num: an ndarray of size 200, each element number of images to read from that class.
 if integer is provided for any of the above, an ndarray with that value is contructed.
 shuffles the read data.
 '''
-def read_cub(cub_path, co_num, test_num, train_num, im_size=128, co_size=64):
+def prep_cub(cub_path, co_num, test_num, train_num):
 	### init
 	co_num = np.array(co_num) if type(co_num) is np.ndarray else co_num*np.ones(200)
 	train_num = np.array(train_num) if type(train_num) is np.ndarray else train_num*np.ones(200)
@@ -210,15 +211,46 @@ def read_cub(cub_path, co_num, test_num, train_num, im_size=128, co_size=64):
 	### read image file names, bboxes, and classes
 	im_fnames = np.array([v[0] for v in read_cub_file(cub_path+'/images.txt')])
 	im_class = np.array([int(v[0]) for v in read_cub_file(cub_path+'/image_class_labels.txt')]) - 1
-	im_bbox = np.array(
-		[[int(float(v)) for v in bb] for bb in read_cub_file(cub_path+'/bounding_boxes.txt')])
 
 	### shuffle
 	order = np.arange(im_fnames.shape[0])
 	np.random.shuffle(order)
 	im_fnames = im_fnames[order]
 	im_class = im_class[order]
-	im_bbox = im_bbox[order, ...]
+
+	### construct the splits
+	co_order = list()
+	test_order = list()
+	train_order = list()
+	total_num = np.sum(co_num+test_num+train_num)
+	print '>>> Preparing CUB from: '+cub_path
+	counter = 0
+	for i, c in enumerate(im_class):
+		#print '>>> i: ', im_fnames[i]
+		if co_num[c] > 0:
+			co_order.append(order[i])
+			co_num[c] -= 1
+		elif test_num[c] > 0:
+			test_order.append(order[i])
+			test_num[c] -= 1	
+		elif train_num[c] > 0:
+			train_order.append(order[i])
+			train_num[c] -= 1
+	return co_order, test_order, train_order
+
+'''
+Reading CUB dataset.
+co_order, test_order, train_order: the list of indices on images.txt for co, test, and train splits.
+'''
+def read_cub(cub_path, co_order, test_order, train_order, im_size=128, co_size=64):
+	### read image file names, bboxes, and classes
+	im_fnames = np.array([v[0] for v in read_cub_file(cub_path+'/images.txt')])
+	im_class = np.array([int(v[0]) for v in read_cub_file(cub_path+'/image_class_labels.txt')]) - 1
+	im_bbox = np.array(
+		[[int(float(v)) for v in bb] for bb in read_cub_file(cub_path+'/bounding_boxes.txt')])
+	co_num = len(co_order)
+	test_num = len(test_order)
+	train_num = len(train_order)
 
 	### read images
 	train_im = list()
@@ -229,55 +261,59 @@ def read_cub(cub_path, co_num, test_num, train_num, im_size=128, co_size=64):
 	co_labs = list()
 	train_bb = list()
 	test_bb = list()
-	total_num = np.sum(co_num+test_num+train_num)
+	total_num = co_num + test_num + train_num
 	print '>>> Reading CUB from: '+cub_path
 	widgets = ["CUB", Percentage(), Bar(), ETA()]
 	pbar = ProgressBar(maxval=total_num, widgets=widgets)
 	pbar.start()
 	counter = 0
-	for i, c in enumerate(im_class):
-		pbar.update(counter)
+
+	### read content images
+	for i in co_order:
 		counter += 1
-		#print '>>> i: ', im_fnames[i]
-		if co_num[c] > 0:
-			im = read_image(cub_path+'/images/'+im_fnames[i], co_size, sqcrop=False, bbox=im_bbox[i])
-			co_im.append(im)
-			co_labs.append(c)
-			co_num[c] -= 1
-		elif test_num[c] > 0:
-			im, w, h = read_image(cub_path+'/images/'+im_fnames[i], im_size, 
-				sqcrop=False, verbose=True)
-			test_im.append(im)
-			test_labs.append(c)
-			bbox = im_bbox[i]
-			### transform bbox
-			im_scale_w = 1.0 * im_size / w
-			im_scale_h = 1.0 * im_size / h
-			bbox[0] = int(bbox[0] * im_scale_w)
-			bbox[1] = int(bbox[1] * im_scale_h)
-			bbox[2] = int(bbox[2] * im_scale_w)
-			bbox[3] = int(bbox[3] * im_scale_h)
-			test_bb.append(np.array(
-				[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]).reshape(1,4))
-			test_num[c] -= 1	
-		elif train_num[c] > 0:
-			im, w, h = read_image(cub_path+'/images/'+im_fnames[i], im_size, 
-				sqcrop=False, verbose=True)
-			train_im.append(im)
-			train_labs.append(c)
-			bbox = im_bbox[i]
-			### transform bbox
-			im_scale_w = 1.0 * im_size / w
-			im_scale_h = 1.0 * im_size / h
-			bbox[0] = int(bbox[0] * im_scale_w)
-			bbox[1] = int(bbox[1] * im_scale_h)
-			bbox[2] = int(bbox[2] * im_scale_w)
-			bbox[3] = int(bbox[3] * im_scale_h)
-			train_bb.append(np.array(
-				[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]).reshape(1,4))
-			train_num[c] -= 1
-		else:
-			counter -= 1
+		pbar.update(counter)
+		im = read_image(cub_path+'/images/'+im_fnames[i], co_size, sqcrop=False, bbox=im_bbox[i])
+		co_im.append(im)
+		co_labs.append(im_class[i])
+
+	### read test images
+	for i in test_order:
+		counter += 1
+		pbar.update(counter)
+		im, w, h = read_image(cub_path+'/images/'+im_fnames[i], im_size, 
+			sqcrop=False, verbose=True)
+		test_im.append(im)
+		test_labs.append(im_class[i])
+		bbox = im_bbox[i]
+		### transform bbox
+		im_scale_w = 1.0 * im_size / w
+		im_scale_h = 1.0 * im_size / h
+		bbox[0] = int(bbox[0] * im_scale_w)
+		bbox[1] = int(bbox[1] * im_scale_h)
+		bbox[2] = int(bbox[2] * im_scale_w)
+		bbox[3] = int(bbox[3] * im_scale_h)
+		test_bb.append(np.array(
+			[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]).reshape(1,4))
+
+	### read train images
+	for i in train_order:
+		counter += 1
+		pbar.update(counter)
+		im, w, h = read_image(cub_path+'/images/'+im_fnames[i], im_size, 
+			sqcrop=False, verbose=True)
+		train_im.append(im)
+		train_labs.append(im_class[i])
+		bbox = im_bbox[i]
+		### transform bbox
+		im_scale_w = 1.0 * im_size / w
+		im_scale_h = 1.0 * im_size / h
+		bbox[0] = int(bbox[0] * im_scale_w)
+		bbox[1] = int(bbox[1] * im_scale_h)
+		bbox[2] = int(bbox[2] * im_scale_w)
+		bbox[3] = int(bbox[3] * im_scale_h)
+		train_bb.append(np.array(
+			[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]).reshape(1,4))
+
 	return (np.array(co_im), co_labs), \
 		(np.array(test_im), test_bb, test_labs), \
 		(np.array(train_im), train_bb, train_labs)
@@ -1530,14 +1566,20 @@ if __name__ == '__main__':
 	#test_bbox = mnist_test_bbox
 
 	### cub data
-	co_num = 5#10
+	co_num = 10
 	test_num = 5
-	train_num = 5#0
+	train_num = 50
 	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
-	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, co_num, test_num, train_num)
+	cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
+	with open(cub_order_path, 'rb') as fs:
+		cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
+	#cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
+	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
 	print '>>> CUB CO SIZE:', cub_co_data[0].shape
 	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
 	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
+	with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
+		pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
 
 	### dataset choice
 	train_im = cub_train_data[0]
@@ -1594,9 +1636,9 @@ if __name__ == '__main__':
 	train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
 
 	### load condet **eval
-	#condet_path = '/media/evl/Public/Mahyar/condet_logs/41_logs_attstnmulti10_avgatt_cub_10shot_b9bb999_allbbox/run_%d/snapshots/model_83333_500000.h5'
+	#condet_path = '/media/evl/Public/Mahyar/condet_logs/41_logs_attstnmulti10_avgatt_cub_10shot_b9bb999_allbbox/run_{}/snapshots/model_83333_500000.h5'
 	condet_path = log_path_snap + '/model_best.h5'
-	condet.load(condet_path % run_seed)
+	condet.load(condet_path.format(run_seed))
 
 	'''
 	GAN DATA EVAL
