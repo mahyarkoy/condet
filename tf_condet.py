@@ -289,8 +289,8 @@ class Condet:
 			self.g_loss_total = self.co_g_loss_mean + \
 				self.penalty_weight * self.stn_init_loss_weight * self.stn_init_loss + \
 				self.stn_boundary_loss_weight * self.stn_boundary_loss + \
-				self.stn_scale_loss_weight * self.stn_scale_loss + \
-				self.enc_loss_weight * self.enc_loss
+				self.stn_scale_loss_weight * self.stn_scale_loss #+ \
+				#self.enc_loss_weight * self.enc_loss
 				#self.im_dg_loss_weight * self.im_g_loss_mean
 				#self.rec_loss_weight * (self.co_rec_loss + self.im_rec_loss)
 				#self.g_init_penalty_weight * self.g_init_loss_weight * (self.co_g_init_loss + self.im_g_init_loss)
@@ -711,7 +711,7 @@ class Condet:
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
 		else:
 			### encoder opt
-			self.sess.run(self.e_opt, feed_dict=feed_dict)
+			#self.sess.run(self.e_opt, feed_dict=feed_dict)
 			### stn opt
 			res_list = [self.im_g_layer, self.summary, self.g_opt]
 			res_list = self.sess.run(res_list, feed_dict=feed_dict)
