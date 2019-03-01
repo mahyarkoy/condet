@@ -31,6 +31,7 @@ import scipy.io as sio
 import skimage.io as skio
 import glob
 from PIL import Image
+import xml.etree.ElementTree as xmlet
 from calculate_mean_ap import main_mean_ap, get_avg_precision_at_iou
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID" # so the IDs match nvidia-smi
@@ -272,7 +273,9 @@ def read_cub(cub_path, co_order, test_order, train_order, im_size=128, co_size=6
 	for i in co_order:
 		counter += 1
 		pbar.update(counter)
-		im = read_image(cub_path+'/images/'+im_fnames[i], co_size, sqcrop=False, bbox=im_bbox[i])
+		bbox = im_bbox[i]
+		im = read_image(cub_path+'/images/'+im_fnames[i], co_size, 
+			sqcrop=False, bbox=(bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]))
 		co_im.append(im)
 		co_labs.append(im_class[i])
 
@@ -317,6 +320,148 @@ def read_cub(cub_path, co_order, test_order, train_order, im_size=128, co_size=6
 	return (np.array(co_im), co_labs), \
 		(np.array(test_im), test_bb, test_labs), \
 		(np.array(train_im), train_bb, train_labs)
+
+def read_voc_files(path):
+	sets_path = path + '/ImageSets/Main/'
+	class_list = [
+		'person', 'bird', 'cat', 'cow', 'dog', 'horse', 'sheep',
+		'aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train',
+		'bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']
+	im_sets_train = list()
+	im_sets_val = list()
+	im_sets_test = list()
+	### read image names in each set
+	for i, c in enumerate(class_list):
+		with open(sets_path+c+'_train.txt', 'r') as fs:
+			im_sets_train.append([l.strip().split(' ')[0] for l in fs \
+				if int(l.strip().split(' ')[-1]) == 1])
+		with open(sets_path+c+'_val.txt', 'r') as fs:
+			im_sets_val.append([l.strip().split(' ')[0] for l in fs \
+				if int(l.strip().split(' ')[-1]) == 1])
+		with open(sets_path+c+'_test.txt', 'r') as fs:
+			im_sets_test.append([l.strip().split(' ')[0] for l in fs \
+				if int(l.strip().split(' ')[-1]) == 1])
+	return class_list, im_sets_train, im_sets_val, im_sets_test
+
+'''
+Returns a bbox matrix of shape (B, 4) where B is the number of objects with class_name.
+path: xml file containing voc annotation.
+'''
+def read_voc_bbox(path, class_name, normalize=False):
+	e = xmlet.parse(path).getroot()
+	h = float(e.find('./size/height').text)
+	w = float(e.find('./size/width').text)
+	bbox = list()
+	for obj in e.findall('object'):
+		if obj.find('name').text == class_name:
+			bb = map(int, 
+				[obj.find('./bndbox/xmin').text, obj.find('./bndbox/ymin').text, 
+				obj.find('./bndbox/xmax').text, obj.find('./bndbox/ymax').text])
+			if normalize:
+				bb = [bb[0]/w, bb[1]/h, bb[2]/w, bb[3]/h]
+			bbox.append(bb)
+	return np.array(bbox).reshape((-1, 4))
+
+def prune_voc_hard(path, imnc_list, h_thr, w_thr):
+	ann_path = path + '/Annotations/'
+	keep_list = list()
+	for i, (imn, c) in enumerate(imnc_list):
+		bbox = read_voc_bbox(ann_path+imn+'.xml', c, normalize=True)
+		bbox_w = bbox[:, 2] - bbox[:, 0]
+		bbox_h = bbox[:, 3] - bbox[:, 1]
+		if np.min(bbox_w) > w_thr and np.min(bbox_h) > h_thr:
+			keep_list.append((imn, c))
+	return keep_list
+
+'''
+Returns a list of (im_name, class_name) for each co, test, and train set.
+co_num, test_num, train_num: list of size class_num, indicating num per class.
+'''
+def prep_voc(path, co_num, test_num, train_num, h_thr=0.2, w_thr=0.2):
+	class_list, im_names_train, im_names_val, im_names_test = read_voc_files(path)
+	co_list = list()
+	test_list = list()
+	train_list = list()
+	for i, c in enumerate(class_list):
+		if co_num[i] > 0 or train_num[i] > 0:
+			imn_val = im_names_val[i]
+			imn_train = im_names_train[i]
+			imnc_trainval = [(imn, c) for imn in imn_val + imn_train]
+			np.random.shuffle(imnc_trainval)
+			imnc_trainval = prune_voc_hard(path, imnc_trainval, h_thr, w_thr)
+			co_list.extend(imnc_trainval[:co_num[i]])
+			train_list.extend(imnc_trainval[co_num[i]:co_num[i]+train_num[i]])
+		
+		if test_num[i] > 0:
+			imn_test = im_names_test[i]
+			imnc_test = [(imn, c) for imn in imn_test]
+			np.random.shuffle(imnc_test)
+			imnc_test = prune_voc_hard(path, imnc_test, h_thr, w_thr)
+			test_list.extend(imnc_test[:test_num[i]])
+
+	return co_list, test_list, train_list
+
+'''
+Reading VOC dataset.
+co_list, test_list, and train_list: list of (im_name, class_name) for each set.
+'''
+def read_voc(path, co_list, test_list, train_list, im_size=128, co_size=64):
+	### inits
+	co_num = len(co_list)
+	test_num = len(test_list)
+	train_num = len(train_list)
+	im_path = path + '/JPEGImages/'
+	ann_path = path + '/Annotations/'
+	train_im = list()
+	test_im = list()
+	co_im = list()
+	train_labs = list()
+	test_labs = list()
+	co_labs = list()
+	train_bb = list()
+	test_bb = list()
+	total_num = co_num + test_num + train_num
+	print '>>> Reading VOC from: '+ path
+	widgets = ["VOC", Percentage(), Bar(), ETA()]
+	pbar = ProgressBar(maxval=total_num, widgets=widgets)
+	pbar.start()
+	counter = 0
+
+	### read content images
+	for imn, c in co_list:
+		counter += 1
+		pbar.update(counter)
+		bbox = read_voc_bbox(ann_path+imn+'.xml', c)
+		im = read_image(im_path+imn+'.jpg', co_size, sqcrop=False, bbox=bbox[0])
+		co_im.append(im)
+		co_labs.append(c)
+
+	### read test images
+	for imn, c in test_list:
+		counter += 1
+		pbar.update(counter)
+		bbox = read_voc_bbox(ann_path+imn+'.xml', c, normalize=True)
+		im, w, h = read_image(im_path+imn+'.jpg', im_size, 
+			sqcrop=False, verbose=True)
+		test_im.append(im)
+		test_labs.append(c)
+		test_bb.append((bbox * im_size).astype(int))
+
+	### read train images
+	for imn, c in train_list:
+		counter += 1
+		pbar.update(counter)
+		bbox = read_voc_bbox(ann_path+imn+'.xml', c, normalize=True)
+		im, w, h = read_image(im_path+imn+'.jpg', im_size, 
+			sqcrop=False, verbose=True)
+		train_im.append(im)
+		train_labs.append(c)
+		train_bb.append((bbox * im_size).astype(int))
+
+	return (np.array(co_im), co_labs), \
+		(np.array(test_im), test_bb, test_labs), \
+		(np.array(train_im), train_bb, train_labs)
+
 
 def prep_svhn(co_data):
 	co_data_re = (co_data + 1.0) / 2.0
@@ -381,8 +526,8 @@ def read_image(im_path, im_size, sqcrop=True, bbox=None, verbose=False):
 	elif bbox is not None:
 		left = bbox[0]
 		top = bbox[1]
-		right = bbox[0] + bbox[2]
-		bottom = bbox[1] + bbox[3]
+		right = bbox[2]
+		bottom = bbox[3]
 		im_sq = im.crop((left, top, right, bottom))
 	else:
 		im_sq = im
@@ -558,8 +703,11 @@ def im_block_draw(im_data, sample_size, path, im_labels=None, ganist=None, borde
 		for g in range(max_label+1):
 			im_draw[g, ...] = im_data[im_labels == g, ...][:sample_size, ...]
 	else:
-		draw_ids = np.random.choice(imb, size=sample_size**2, replace=False)
-		im_draw = im_data[draw_ids, ...].reshape([sample_size, sample_size, imh, imw, imc])
+		im_draw = np.zeros([sample_size**2, imh, imw, imc])
+		sample_size_max = min(sample_size**2, imb)
+		draw_ids = np.random.choice(imb, size=sample_size_max, replace=False)
+		im_draw[:sample_size_max, ...] = im_data[draw_ids, ...]
+		im_draw = im_draw.reshape([sample_size, sample_size, imh, imw, imc])
 	
 	#im_draw = (im_draw + 1.0) / 2.0
 	if ganist is not None:
@@ -1566,28 +1714,52 @@ if __name__ == '__main__':
 	#test_bbox = mnist_test_bbox
 
 	### cub data
-	co_num = 10
-	test_num = 5
-	train_num = 50
-	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
-	cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
-	with open(cub_order_path, 'rb') as fs:
-		cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
-	#cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
-	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
-	print '>>> CUB CO SIZE:', cub_co_data[0].shape
-	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
-	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
-	with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
-		pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
+	#co_num = 10
+	#test_num = 5
+	#train_num = 50
+	#cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
+	#cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
+	#with open(cub_order_path, 'rb') as fs:
+	#	cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
+	##cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
+	#cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
+	#print '>>> CUB CO SIZE:', cub_co_data[0].shape
+	#print '>>> CUB TEST SIZE:', cub_test_data[0].shape
+	#print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
+	#with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
+	#	pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
+	#
+	#### dataset choice
+	#train_im = cub_train_data[0]
+	#train_bbox = cub_train_data[1]
+	#train_co = cub_co_data[0]
+	#
+	#test_im = cub_test_data[0]
+	#test_bbox = cub_test_data[1]
+
+	### voc data
+	co_num = [50 if i == 1 else 0 for i in range(20)]
+	test_num = [500 if i == 1 else 0 for i in range(20)]
+	train_num = [500 if i == 1 else 0 for i in range(20)]
+	voc_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007'
+	#voc_order_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007/voc_bird_10_500_500_{}.cpk'.format(run_seed)
+	#with open(voc_order_path, 'rb') as fs:
+	#	voc_co_list, voc_test_list, voc_train_list = pk.load(fs)
+	voc_co_list, voc_test_list, voc_train_list = prep_voc(voc_path, co_num, test_num, train_num)
+	voc_co_data, voc_test_data, voc_train_data = read_voc(voc_path, voc_co_list, voc_test_list, voc_train_list)
+	print '>>> VOC CO SIZE:', voc_co_data[0].shape
+	print '>>> VOC TEST SIZE:', voc_test_data[0].shape
+	print '>>> VOC TRAIN SIZE:', voc_train_data[0].shape
+	with open(log_path+'/voc_bird_10_500_500_{}.cpk'.format(run_seed), 'wb+') as fs:
+		pk.dump([voc_co_list, voc_test_list, voc_train_list], fs)
 
 	### dataset choice
-	train_im = cub_train_data[0]
-	train_bbox = cub_train_data[1]
-	train_co = cub_co_data[0]
+	train_im = voc_train_data[0]
+	train_bbox = voc_train_data[1]
+	train_co = voc_co_data[0]
 
-	test_im = cub_test_data[0]
-	test_bbox = cub_test_data[1]
+	test_im = voc_test_data[0]
+	test_bbox = voc_test_data[1]
 
 	'''
 	TENSORFLOW SETUP
@@ -1623,11 +1795,8 @@ if __name__ == '__main__':
 	### draw samples from content
 	print ">>> TRAIN CO shape: ", train_co.shape
 	print ">>> TRAIN IM shape: ", train_im.shape
-	sub_train_co = train_co[:20]
-	sub_co_len = sub_train_co.shape[0]
-	block_draw(sub_train_co.reshape((sub_co_len, 1)+train_co.shape[1:]), 
-		log_path+'/train_co_10.png', border=True)
-	im_block_draw(train_co, 5, log_path+'/train_co_samples.png', border=True)
+	co_square_len = int(np.ceil(np.sqrt(train_co.shape[0])))
+	im_block_draw(train_co, co_square_len, log_path+'/train_co_samples.png', border=True)
 
 	'''
 	GAN SETUP SECTION
