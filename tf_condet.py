@@ -405,8 +405,6 @@ class Condet:
 			d_rg_loss = -rg_logits
 		else:
 			raise ValueError('>>> d_loss_type: %s is not defined!' % self.d_loss_type)
-		print '>>> d_r_loss shape: ', d_r_loss.get_shape().as_list()
-		print '>>> d_g_loss shape: ', d_g_loss.get_shape().as_list()
 
 		### gradient penalty
 		### NaN free norm gradient
@@ -581,11 +579,11 @@ class Condet:
 					#theta_init = tf.get_variable('theta_init', initializer=tf.constant([[1., 0., 0., 0., 1., 0.]]))
 					#theta_init = tf.constant([[1., 0., 0., 0., 1., 0.]], dtype=tf_dtype)
 					theta_init = tf.reshape(tf.stack([sh_b, 0.0, th_b, 0.0, sw_b, tw_b], axis=0), [1, 6])
-					print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
+					#print '>>> Theta Init shape: ', theta_init.get_shape().as_list()
 					#theta = (1.0-self.theta_decay) * tf.concat([sh, z, th, z, sw, tw], axis=1) + self.theta_decay * theta_init
 					theta_stn = tf.concat([-sh, z, th, z, -sw, tw], axis=1)
 					theta = theta_stn + theta_init
-					print '>>> Theta shape: ', theta.get_shape().as_list()
+					#print '>>> Theta shape: ', theta.get_shape().as_list()
 
 					### stn net
 					stn_layer = tf.reshape(stn.transformer(data_layer, theta, self.stn_size), [-1]+self.co_dim)

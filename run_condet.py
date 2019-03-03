@@ -1065,6 +1065,18 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	logits_r_logs = list()
 	ap_logs = list()
 
+	### compute test true theta for plotting
+	bbox_mat = np.concatenate(test_bbox, axis=0)
+	test_wscale = 1.0 * (bbox_mat[:, 2] - bbox_mat[:, 0]) / condet.data_dim[1]
+	test_hscale = 1.0 * (bbox_mat[:, 3] - bbox_mat[:, 1]) / condet.data_dim[0]
+	test_wtrans = 1.0 * (bbox_mat[:, 0] + bbox_mat[:, 2]) / condet.data_dim[1] - 1.0
+	test_htrans = 1.0 * (bbox_mat[:, 1] + bbox_mat[:, 3]) / condet.data_dim[1] - 1.0
+	test_theta = [
+		(np.mean(test_wscale), np.std(test_wscale)),
+		(np.mean(test_wtrans), np.std(test_wtrans)),
+		(np.mean(test_hscale), np.std(test_hscale)),
+		(np.mean(test_htrans), np.std(test_htrans))]
+
 	### training inits
 	ap_best = 0.
 	d_itr = 0
@@ -1082,7 +1094,6 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 		train_co = shuffle_data(co_data)
 		train_size = train_im.shape[0]
 		co_size = train_co.shape[0]
-
 		epoch += 1
 		print ">>> Epoch %d started..." % epoch
 
@@ -1107,8 +1118,8 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 			else:
 				co_batch_start += batch_len
 		
-			### evaluate energy distance between real and gen distributions
-			if itr_total % eval_step == 0:
+			### evaluate condet and plot
+			if itr_total % eval_step == 0 or itr_total == max_itr_total-1:
 				### update dscore
 				logits_r_mean, logits_r_std = compute_dscore_co(condet, co_data)
 				#condet.update_const_vars([logits_r_mean, logits_r_std])
@@ -1167,13 +1178,207 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				#fig.savefig(log_path_draw+'/sep_loss_%d_g.png' % itr_total, dpi=300)
 				#plt.close(fig)
 
+				### plot condet evaluation plot every epoch **g_num**
+				if len(eval_logs) > 1:
+					eval_logs_mat = np.array(eval_logs)
+					eval_t_logs_mat = np.array(eval_t_logs)
+					stats_logs_mat = np.array(stats_logs)
+					norms_logs_mat = np.array(norms_logs)
+					att_grad_mean_mat = np.array(att_grad_mean_logs)
+					g_loss_mean_mat = np.array(g_loss_mean_logs)
+					theta_mat = np.array(theta_logs)
+					theta_stn_mat = np.array(theta_stn_logs)
+					theta_init_mat = np.array(theta_init_logs)
+					prec_mat = np.array(prec_logs)
+					recall_mat = np.array(recall_logs)
+					logits_mat = np.array(logits_logs)
+					logits_r_mat = np.array(logits_r_logs)
+
+					#eval_logs_names = ['fid_dist', 'fid_dist']
+					stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
+										'big_vars_ratio']
+					#plot_time_mat(eval_logs_mat, eval_logs_names, 1, log_path, itrs=itrs_logs)
+					plot_time_mat(stats_logs_mat, stats_logs_names, 1, log_path, itrs=itrs_logs)
+					
+					### plot IOU
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, eval_logs_mat[:,0], color='b', label='mean_iou')
+					ax.plot(itrs_logs, eval_logs_mat[:,0]+eval_logs_mat[:,1], color='b', linestyle='--')
+					ax.plot(itrs_logs, eval_logs_mat[:,0]-eval_logs_mat[:,1], color='b', linestyle='--')
+					ax.set_ylim(bottom=0.0, top=1.0)
+					ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Mean IOU')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/mean_iou_train.png', dpi=300)
+					plt.close(fig)
+
+					### plot IOU test
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, eval_t_logs_mat[:,0], color='b', label='mean_iou')
+					ax.plot(itrs_logs, eval_t_logs_mat[:,0]+eval_t_logs_mat[:,1], color='b', linestyle='--')
+					ax.plot(itrs_logs, eval_t_logs_mat[:,0]-eval_t_logs_mat[:,1], color='b', linestyle='--')
+					ax.set_ylim(bottom=0.0, top=1.0)
+					ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Mean IOU Test')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/mean_iou_test.png', dpi=300)
+					plt.close(fig)
+
+					### plot precision and recall
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, prec_mat, color='r', label='precision')
+					ax.plot(itrs_logs, recall_mat, color='b', label='recall')
+					ax.set_ylim(bottom=0.0, top=1.0)
+					ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Precision and Recall')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/prec_recall_test.png', dpi=300)
+					plt.close(fig)
+
+					### plot average precision
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, ap_logs)
+					ax.set_ylim(bottom=0.0, top=1.0)
+					ax.set_yticks(np.arange(0.0, 1.1, 0.1))
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Average Precision')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('AP')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/average_prec.png', dpi=300)
+					plt.close(fig)
+
+					### plot logits
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, logits_mat[:,0], color='b')
+					ax.plot(itrs_logs, logits_mat[:,0]+logits_mat[:,1], color='b', linestyle='--')
+					ax.plot(itrs_logs, logits_mat[:,0]-logits_mat[:,1], color='b', linestyle='--')
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Top Logits')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					#ax.legend(loc=0)
+					fig.savefig(log_path+'/top_logits.png', dpi=300)
+					plt.close(fig)
+
+					### plot logits on content images
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, logits_r_mat[:,0], color='b')
+					ax.plot(itrs_logs, logits_r_mat[:,0]+logits_r_mat[:,1], color='b', linestyle='--')
+					ax.plot(itrs_logs, logits_r_mat[:,0]-logits_r_mat[:,1], color='b', linestyle='--')
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Content Logits')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					#ax.legend(loc=0)
+					fig.savefig(log_path+'/content_logits.png', dpi=300)
+					plt.close(fig)
+
+					### plot norms
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					ax.plot(itrs_logs, norms_logs_mat[:,0], color='r', label='max_norm')
+					ax.plot(itrs_logs, norms_logs_mat[:,1], color='b', label='mean_norm')
+					ax.plot(itrs_logs, norms_logs_mat[:,1]+norms_logs_mat[:,2], color='b', linestyle='--')
+					ax.plot(itrs_logs, norms_logs_mat[:,1]-norms_logs_mat[:,2], color='b', linestyle='--')
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Norm Grads')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/norm_grads.png', dpi=300)
+					plt.close(fig)
+
+					### plot theta
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					for g in range(6):
+						ax.plot(itrs_logs, theta_mat[:, 0, g], label='theta_%d' % g, 
+							c=global_color_set_tab[g])
+						ax.plot(itrs_logs, theta_mat[:, 0, g] + theta_mat[:, 1, g], 
+							c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+						ax.plot(itrs_logs, theta_mat[:, 0, g] - theta_mat[:, 1, g], 
+							c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+					
+					for gt in range(4):
+						ax.plot(itrs_logs, [test_theta[gt][0] for _ in itrs_logs], label='test_%d' % gt, 
+							c=global_color_set_tab[g+gt+1])
+						ax.plot(itrs_logs, [test_theta[gt][0] + test_theta[gt][1] for _ in itrs_logs], 
+							c=global_color_set_tab[g+gt+1], linestyle='--', linewidth=0.5)
+						ax.plot(itrs_logs, [test_theta[gt][0] - test_theta[gt][1] for _ in itrs_logs], 
+							c=global_color_set_tab[g+gt+1], linestyle='--', linewidth=0.5)
+					
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Theta')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/theta_log.png', dpi=300)
+					plt.close(fig)
+
+					### plot theta_stn
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					for g in range(6):
+						ax.plot(itrs_logs, theta_stn_mat[:, 0, g], label='theta_stn_%d' % g, c=global_color_set_tab[g])
+						ax.plot(itrs_logs, theta_stn_mat[:, 0, g] + theta_stn_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+						ax.plot(itrs_logs, theta_stn_mat[:, 0, g] - theta_stn_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Theta STN')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/theta_stn_log.png', dpi=300)
+					plt.close(fig)
+
+					### plot theta_init
+					fig, ax = plt.subplots(figsize=(8, 6))
+					ax.clear()
+					for g in range(6):
+						ax.plot(itrs_logs, theta_init_mat[:, 0, g], label='theta_init_%d' % g, c=global_color_set_tab[g])
+						ax.plot(itrs_logs, theta_init_mat[:, 0, g] + theta_init_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+						ax.plot(itrs_logs, theta_init_mat[:, 0, g] - theta_init_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
+					ax.grid(True, which='both', linestyle='dotted')
+					ax.set_title('Theta INIT')
+					ax.set_xlabel('Iterations')
+					ax.set_ylabel('Values')
+					ax.legend(loc=0)
+					fig.savefig(log_path+'/theta_init_log.png', dpi=300)
+					plt.close(fig)
+
+					### save eval_logs
+					with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
+						pk.dump([itrs_logs, eval_logs_mat], fs)
+					### save eval_t_logs
+					with open(log_path+'/iou_test_logs.cpk', 'wb+') as fs:
+						pk.dump([itrs_logs, eval_t_logs_mat], fs)
+					### save average precision logs
+					with open(log_path+'/ap_logs.cpk', 'wb+') as fs:
+						pk.dump([itrs_logs, ap_logs], fs)
+
 			### discriminator update
-			if d_update_flag is True:
+			if d_update_flag is True and d_updates > 0:
 				batch_sum, batch_g_data = condet.step(batch_im, batch_co, gen_update=False)
 				condet.write_sum(batch_sum, itr_total)
 				d_itr += 1
 				itr_total += 1
 				d_update_flag = False if d_itr % d_updates == 0 else True
+				d_update_flag = True if g_updates <= 0 else d_update_flag
 
 			### generator updates: g_updates times for each d_updates of discriminator
 			elif g_updates > 0:
@@ -1190,188 +1395,6 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 
 			if itr_total >= max_itr_total:
 				break
-
-		### plot condet evaluation plot every epoch **g_num**
-		if len(eval_logs) < 2:
-			continue
-		eval_logs_mat = np.array(eval_logs)
-		eval_t_logs_mat = np.array(eval_t_logs)
-		stats_logs_mat = np.array(stats_logs)
-		norms_logs_mat = np.array(norms_logs)
-		att_grad_mean_mat = np.array(att_grad_mean_logs)
-		g_loss_mean_mat = np.array(g_loss_mean_logs)
-		theta_mat = np.array(theta_logs)
-		theta_stn_mat = np.array(theta_stn_logs)
-		theta_init_mat = np.array(theta_init_logs)
-		prec_mat = np.array(prec_logs)
-		recall_mat = np.array(recall_logs)
-		logits_mat = np.array(logits_logs)
-		logits_r_mat = np.array(logits_r_logs)
-
-		#eval_logs_names = ['fid_dist', 'fid_dist']
-		stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
-							'big_vars_ratio']
-		#plot_time_mat(eval_logs_mat, eval_logs_names, 1, log_path, itrs=itrs_logs)
-		plot_time_mat(stats_logs_mat, stats_logs_names, 1, log_path, itrs=itrs_logs)
-		
-		### plot IOU
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, eval_logs_mat[:,0], color='b', label='mean_iou')
-		ax.plot(itrs_logs, eval_logs_mat[:,0]+eval_logs_mat[:,1], color='b', linestyle='--')
-		ax.plot(itrs_logs, eval_logs_mat[:,0]-eval_logs_mat[:,1], color='b', linestyle='--')
-		ax.set_ylim(bottom=0.0, top=1.0)
-		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Mean IOU')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/mean_iou_train.png', dpi=300)
-		plt.close(fig)
-
-		### plot IOU test
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, eval_t_logs_mat[:,0], color='b', label='mean_iou')
-		ax.plot(itrs_logs, eval_t_logs_mat[:,0]+eval_t_logs_mat[:,1], color='b', linestyle='--')
-		ax.plot(itrs_logs, eval_t_logs_mat[:,0]-eval_t_logs_mat[:,1], color='b', linestyle='--')
-		ax.set_ylim(bottom=0.0, top=1.0)
-		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Mean IOU Test')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/mean_iou_test.png', dpi=300)
-		plt.close(fig)
-
-		### plot precision and recall
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, prec_mat, color='r', label='precision')
-		ax.plot(itrs_logs, recall_mat, color='b', label='recall')
-		ax.set_ylim(bottom=0.0, top=1.0)
-		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Precision and Recall')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/prec_recall_test.png', dpi=300)
-		plt.close(fig)
-
-		### plot average precision
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, ap_logs)
-		ax.set_ylim(bottom=0.0, top=1.0)
-		ax.set_yticks(np.arange(0.0, 1.1, 0.1))
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Average Precision')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('AP')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/average_prec.png', dpi=300)
-		plt.close(fig)
-
-		### plot logits
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, logits_mat[:,0], color='b')
-		ax.plot(itrs_logs, logits_mat[:,0]+logits_mat[:,1], color='b', linestyle='--')
-		ax.plot(itrs_logs, logits_mat[:,0]-logits_mat[:,1], color='b', linestyle='--')
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Top Logits')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		#ax.legend(loc=0)
-		fig.savefig(log_path+'/top_logits.png', dpi=300)
-		plt.close(fig)
-
-		### plot logits on content images
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, logits_r_mat[:,0], color='b')
-		ax.plot(itrs_logs, logits_r_mat[:,0]+logits_r_mat[:,1], color='b', linestyle='--')
-		ax.plot(itrs_logs, logits_r_mat[:,0]-logits_r_mat[:,1], color='b', linestyle='--')
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Content Logits')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		#ax.legend(loc=0)
-		fig.savefig(log_path+'/content_logits.png', dpi=300)
-		plt.close(fig)
-
-		### plot norms
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		ax.plot(itrs_logs, norms_logs_mat[:,0], color='r', label='max_norm')
-		ax.plot(itrs_logs, norms_logs_mat[:,1], color='b', label='mean_norm')
-		ax.plot(itrs_logs, norms_logs_mat[:,1]+norms_logs_mat[:,2], color='b', linestyle='--')
-		ax.plot(itrs_logs, norms_logs_mat[:,1]-norms_logs_mat[:,2], color='b', linestyle='--')
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Norm Grads')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/norm_grads.png', dpi=300)
-		plt.close(fig)
-
-		### plot theta
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		for g in range(6):
-			ax.plot(itrs_logs, theta_mat[:, 0, g], label='theta_%d' % g, c=global_color_set_tab[g])
-			ax.plot(itrs_logs, theta_mat[:, 0, g] + theta_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-			ax.plot(itrs_logs, theta_mat[:, 0, g] - theta_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Theta')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/theta_log.png', dpi=300)
-		plt.close(fig)
-
-		### plot theta_stn
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		for g in range(6):
-			ax.plot(itrs_logs, theta_stn_mat[:, 0, g], label='theta_stn_%d' % g, c=global_color_set_tab[g])
-			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] + theta_stn_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-			ax.plot(itrs_logs, theta_stn_mat[:, 0, g] - theta_stn_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Theta STN')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/theta_stn_log.png', dpi=300)
-		plt.close(fig)
-
-		### plot theta_init
-		fig, ax = plt.subplots(figsize=(8, 6))
-		ax.clear()
-		for g in range(6):
-			ax.plot(itrs_logs, theta_init_mat[:, 0, g], label='theta_init_%d' % g, c=global_color_set_tab[g])
-			ax.plot(itrs_logs, theta_init_mat[:, 0, g] + theta_init_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-			ax.plot(itrs_logs, theta_init_mat[:, 0, g] - theta_init_mat[:, 1, g], c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-		ax.grid(True, which='both', linestyle='dotted')
-		ax.set_title('Theta INIT')
-		ax.set_xlabel('Iterations')
-		ax.set_ylabel('Values')
-		ax.legend(loc=0)
-		fig.savefig(log_path+'/theta_init_log.png', dpi=300)
-		plt.close(fig)
-
-	### save eval_logs
-	with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
-		pk.dump([itrs_logs, eval_logs_mat], fs)
-	### save eval_t_logs
-	with open(log_path+'/iou_test_logs.cpk', 'wb+') as fs:
-		pk.dump([itrs_logs, eval_t_logs_mat], fs)
-	### save average precision logs
-	with open(log_path+'/ap_logs.cpk', 'wb+') as fs:
-		pk.dump([itrs_logs, ap_logs], fs)
 
 '''
 Sample sample_size data points from ganist.
@@ -1714,52 +1737,52 @@ if __name__ == '__main__':
 	#test_bbox = mnist_test_bbox
 
 	### cub data
-	#co_num = 10
-	#test_num = 5
-	#train_num = 50
-	#cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
-	#cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
-	#with open(cub_order_path, 'rb') as fs:
-	#	cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
-	##cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
-	#cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
-	#print '>>> CUB CO SIZE:', cub_co_data[0].shape
-	#print '>>> CUB TEST SIZE:', cub_test_data[0].shape
-	#print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
-	#with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
-	#	pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
-	#
-	#### dataset choice
-	#train_im = cub_train_data[0]
-	#train_bbox = cub_train_data[1]
-	#train_co = cub_co_data[0]
-	#
-	#test_im = cub_test_data[0]
-	#test_bbox = cub_test_data[1]
+	co_num = 10
+	test_num = 5
+	train_num = 50
+	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
+	cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
+	with open(cub_order_path, 'rb') as fs:
+		cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
+	#cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
+	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
+	print '>>> CUB CO SIZE:', cub_co_data[0].shape
+	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
+	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
+	with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
+		pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
+	
+	### dataset choice
+	train_im = cub_train_data[0]
+	train_bbox = cub_train_data[1]
+	train_co = cub_co_data[0]
+	
+	test_im = cub_test_data[0]
+	test_bbox = cub_test_data[1]
 
 	### voc data
-	co_num = [50 if i == 1 else 0 for i in range(20)]
-	test_num = [500 if i == 1 else 0 for i in range(20)]
-	train_num = [500 if i == 1 else 0 for i in range(20)]
-	voc_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007'
-	#voc_order_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007/voc_bird_10_500_500_{}.cpk'.format(run_seed)
-	#with open(voc_order_path, 'rb') as fs:
-	#	voc_co_list, voc_test_list, voc_train_list = pk.load(fs)
-	voc_co_list, voc_test_list, voc_train_list = prep_voc(voc_path, co_num, test_num, train_num)
-	voc_co_data, voc_test_data, voc_train_data = read_voc(voc_path, voc_co_list, voc_test_list, voc_train_list)
-	print '>>> VOC CO SIZE:', voc_co_data[0].shape
-	print '>>> VOC TEST SIZE:', voc_test_data[0].shape
-	print '>>> VOC TRAIN SIZE:', voc_train_data[0].shape
-	with open(log_path+'/voc_bird_10_500_500_{}.cpk'.format(run_seed), 'wb+') as fs:
-		pk.dump([voc_co_list, voc_test_list, voc_train_list], fs)
-
-	### dataset choice
-	train_im = voc_train_data[0]
-	train_bbox = voc_train_data[1]
-	train_co = voc_co_data[0]
-
-	test_im = voc_test_data[0]
-	test_bbox = voc_test_data[1]
+	#co_num = [50 if i == 1 else 0 for i in range(20)]
+	#test_num = [500 if i == 1 else 0 for i in range(20)]
+	#train_num = [500 if i == 1 else 0 for i in range(20)]
+	#voc_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007'
+	##voc_order_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007/voc_bird_10_500_500_{}.cpk'.format(run_seed)
+	##with open(voc_order_path, 'rb') as fs:
+	##	voc_co_list, voc_test_list, voc_train_list = pk.load(fs)
+	#voc_co_list, voc_test_list, voc_train_list = prep_voc(voc_path, co_num, test_num, train_num)
+	#voc_co_data, voc_test_data, voc_train_data = read_voc(voc_path, voc_co_list, voc_test_list, voc_train_list)
+	#print '>>> VOC CO SIZE:', voc_co_data[0].shape
+	#print '>>> VOC TEST SIZE:', voc_test_data[0].shape
+	#print '>>> VOC TRAIN SIZE:', voc_train_data[0].shape
+	#with open(log_path+'/voc_bird_10_500_500_{}.cpk'.format(run_seed), 'wb+') as fs:
+	#	pk.dump([voc_co_list, voc_test_list, voc_train_list], fs)
+	#
+	#### dataset choice
+	#train_im = voc_train_data[0]
+	#train_bbox = voc_train_data[1]
+	#train_co = voc_co_data[0]
+	#
+	#test_im = voc_test_data[0]
+	#test_bbox = voc_test_data[1]
 
 	'''
 	TENSORFLOW SETUP
