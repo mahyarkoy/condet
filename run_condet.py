@@ -324,9 +324,11 @@ def read_cub(cub_path, co_order, test_order, train_order, im_size=128, co_size=6
 def read_voc_files(path):
 	sets_path = path + '/ImageSets/Main/'
 	class_list = [
-		'person', 'bird', 'cat', 'cow', 'dog', 'horse', 'sheep',
-		'aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train',
-		'bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']
+		'aeroplane', 'bicycle', 'bird', 'boat',
+		'bottle', 'bus', 'car', 'cat', 'chair',
+		'cow', 'diningtable', 'dog', 'horse',
+		'motorbike', 'person', 'pottedplant',
+		'sheep', 'sofa', 'train', 'tvmonitor']
 	im_sets_train = list()
 	im_sets_val = list()
 	im_sets_test = list()
@@ -1761,9 +1763,9 @@ if __name__ == '__main__':
 	test_bbox = cub_test_data[1]
 
 	### voc data
-	#co_num = [50 if i == 1 else 0 for i in range(20)]
-	#test_num = [500 if i == 1 else 0 for i in range(20)]
-	#train_num = [500 if i == 1 else 0 for i in range(20)]
+	#co_num = [50 if i == 2 else 0 for i in range(20)]
+	#test_num = [500 if i == 2 else 0 for i in range(20)]
+	#train_num = [500 if i == 2 else 0 for i in range(20)]
 	#voc_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007'
 	##voc_order_path = '/media/evl/Public/Mahyar/Data/voc/VOCdevkit/VOC2007/voc_bird_10_500_500_{}.cpk'.format(run_seed)
 	##with open(voc_order_path, 'rb') as fs:
