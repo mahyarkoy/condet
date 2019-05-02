@@ -171,7 +171,7 @@ def prep_mnist(im_input, co_size=(32, 32, 3), label=None, co_per_class=1, empty_
 	### select a number of content images per class
 	co_select = np.zeros(co_data.shape[0], dtype=bool)
 	if label is not None:
-		co_data, label = shuffle_data(co_data, label=label)
+		co_data, _, label = shuffle_data(co_data, label=label)
 		class_num = np.max(label)+1
 		class_counter = np.zeros(class_num)
 		for i in range(co_data.shape[0]):
@@ -463,6 +463,48 @@ def read_voc(path, co_list, test_list, train_list, im_size=128, co_size=64):
 	return (np.array(co_im), co_labs), \
 		(np.array(test_im), test_bb, test_labs), \
 		(np.array(train_im), train_bb, train_labs)
+
+def read_art(co_dir, im_dir, co_size=64, im_size=128, co_fnames=None, val_fnames=None, train_fnames=None):
+	if co_fnames is None:
+		co_fnames = [fn.strip('.jpg').split('/')[-1] for fn in glob.glob(co_dir+'/*.jpg')]
+	if train_fnames is None:
+		im_fnames = [fn.strip('.jpg').split('/')[-1] for fn in glob.glob(im_dir+'/*.jpg')]
+		np.random.shuffle(im_fnames)
+		val_fnames = im_fnames[:1000]
+		train_fnames = im_fnames[1000:11000]
+
+	co_im = list()
+	val_im = list()
+	train_im = list()
+	total_num = len(co_fnames + val_fnames + train_fnames)
+	print '>>> Reading ART dataset'
+	widgets = ["ART", Percentage(), Bar(), ETA()]
+	pbar = ProgressBar(maxval=total_num, widgets=widgets)
+	pbar.start()
+	counter = 0
+	### read content images
+	for fn in co_fnames:
+		counter += 1
+		pbar.update(counter)
+		fp = co_dir + '/' + fn + '.jpg'
+		im = read_image(fp, co_size, sqcrop=False)
+		co_im.append(im)
+	### read val images
+	for fn in val_fnames:
+		counter += 1
+		pbar.update(counter)
+		fp = im_dir + '/' + fn + '.jpg'
+		im = read_image(fp, im_size, sqcrop=False)
+		val_im.append(im)
+	### read train images
+	for fn in train_fnames:
+		counter += 1
+		pbar.update(counter)
+		fp = im_dir + '/' + fn + '.jpg'
+		im = read_image(fp, im_size, sqcrop=False)
+		train_im.append(im)
+
+	return np.array(co_im), np.array(val_im), np.array(train_im), co_fnames, val_fnames, train_fnames
 
 
 def prep_svhn(co_data):
@@ -875,7 +917,7 @@ def draw_multi_stn(im, im_bbox, stn_bbox, stn_att, order_list, path, stn_logits=
 	### construct the image
 	imb, imh, imw, imc = im.shape
 	max_row_num = 2 + np.max([a.shape[0] for a in stn_att])
-	im_bb = draw_bbox(im, im_bbox)
+	im_bb = draw_bbox(im, im_bbox) if im_bbox is not None else np.array(im)
 	im_stn_bb = draw_bbox(im, stn_bbox, bcolor=order_list)
 	im_bb_draw = im_color_borders(im_bb, np.ones(im.shape[0]), max_label=0., color_map='RdBu')
 	im_final = np.zeros((im_bb_draw.shape[0], max_row_num,)+im_bb_draw.shape[1:])
@@ -1018,12 +1060,12 @@ def shuffle_data(im_data, im_bboxes=None, label=None):
 	np.random.shuffle(order)
 	im_data_sh = im_data[order, ...]
 	if im_bboxes is None and label is None:
-		return im_data_sh
+		return im_data_sh, None, None
 	elif im_bboxes is None:
-		return im_data_sh, label[order]
+		return im_data_sh, None, label[order]
 	elif label is None:
 		im_bboxes_sh = [im_bboxes[i] for i in order]
-		return im_data_sh, im_bboxes_sh
+		return im_data_sh, im_bboxes_sh, None
 	else:
 		im_bboxes_sh = [im_bboxes[i] for i in order]
 		return im_data_sh, im_bboxes_sh, label[order]
@@ -1068,16 +1110,17 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 	ap_logs = list()
 
 	### compute test true theta for plotting
-	bbox_mat = np.concatenate(test_bbox, axis=0)
-	test_wscale = 1.0 * (bbox_mat[:, 2] - bbox_mat[:, 0]) / condet.data_dim[1]
-	test_hscale = 1.0 * (bbox_mat[:, 3] - bbox_mat[:, 1]) / condet.data_dim[0]
-	test_wtrans = 1.0 * (bbox_mat[:, 0] + bbox_mat[:, 2]) / condet.data_dim[1] - 1.0
-	test_htrans = 1.0 * (bbox_mat[:, 1] + bbox_mat[:, 3]) / condet.data_dim[1] - 1.0
-	test_theta = [
-		(np.mean(test_wscale), np.std(test_wscale)),
-		(np.mean(test_wtrans), np.std(test_wtrans)),
-		(np.mean(test_hscale), np.std(test_hscale)),
-		(np.mean(test_htrans), np.std(test_htrans))]
+	if test_bbox is not None:
+		bbox_mat = np.concatenate(test_bbox, axis=0)
+		test_wscale = 1.0 * (bbox_mat[:, 2] - bbox_mat[:, 0]) / condet.data_dim[1]
+		test_hscale = 1.0 * (bbox_mat[:, 3] - bbox_mat[:, 1]) / condet.data_dim[0]
+		test_wtrans = 1.0 * (bbox_mat[:, 0] + bbox_mat[:, 2]) / condet.data_dim[1] - 1.0
+		test_htrans = 1.0 * (bbox_mat[:, 1] + bbox_mat[:, 3]) / condet.data_dim[1] - 1.0
+		test_theta = [
+			(np.mean(test_wscale), np.std(test_wscale)),
+			(np.mean(test_wtrans), np.std(test_wtrans)),
+			(np.mean(test_hscale), np.std(test_hscale)),
+			(np.mean(test_htrans), np.std(test_htrans))]
 
 	### training inits
 	ap_best = 0.
@@ -1092,8 +1135,8 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 
 	while itr_total < max_itr_total:
 		### shuffle dataset
-		train_im, train_bboxes = shuffle_data(im_data, im_bbox)
-		train_co = shuffle_data(co_data)
+		train_im, train_bboxes, _ = shuffle_data(im_data, im_bbox)
+		train_co, _, _ = shuffle_data(co_data)
 		train_size = train_im.shape[0]
 		co_size = train_co.shape[0]
 		epoch += 1
@@ -1129,32 +1172,43 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				### run train and test eval
 				draw_path = log_path_draw+'/sample_%d' % itr_total if itr_total % draw_step == 0 \
 					else None
+				eval_res = eval_condet(condet, im_data, im_bbox, draw_path, co_data, const_update=True)
+				eval_res_t = eval_condet(condet, test_im, test_bbox)
 				iou_mean, iou_std, precision, recall, logits_mean, logits_std, \
-				net_stats, g_theta, g_theta_stn, g_theta_init = \
-					eval_condet(condet, im_data, im_bbox, draw_path, co_data, const_update=True)
-				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _, _, _ = \
-					eval_condet(condet, test_im, test_bbox)
+					net_stats, g_theta, g_theta_stn, g_theta_init = eval_res
+				iou_mean_t, iou_std_t, precision_t, recall_t, _, _, _, _, _, _ = eval_res_t
 
 				### AP eval
-				ap = eval_mean_ap(condet, test_im, test_bbox)
-				ap_logs.append(ap)
-				if ap > ap_best:
-					ap_best = ap
-					condet.save(log_path_snap+'/model_best.h5')
+				if test_bbox is not None:
+					ap = eval_mean_ap(condet, test_im, test_bbox)
+					ap_logs.append(ap)
+					if ap > ap_best:
+						ap_best = ap
+						condet.save(log_path_snap+'/model_best.h5')
 
 				### update logs
 				#e_dist = 0 if e_dist < 0 else np.sqrt(e_dist)
-				eval_logs.append([iou_mean, iou_std])
-				eval_t_logs.append([iou_mean_t, iou_std_t])
-				stats_logs.append(net_stats)
 				itrs_logs.append(itr_total)
-				theta_logs.append([np.mean(g_theta, axis=(0,1)), np.std(g_theta, axis=(0,1))])
-				theta_stn_logs.append([np.mean(g_theta_stn, axis=(0,1)), np.std(g_theta_stn, axis=(0,1))])
-				theta_init_logs.append([np.mean(g_theta_init, axis=0), np.std(g_theta_init, axis=0)])
-				prec_logs.append(precision_t)
-				recall_logs.append(recall_t)
-				logits_logs.append([logits_mean, logits_std])
-				logits_r_logs.append([logits_r_mean, logits_r_std])
+				if iou_mean is not None:
+					eval_logs.append([iou_mean, iou_std])
+				if iou_mean_t is not None:
+					eval_t_logs.append([iou_mean_t, iou_std_t])
+				if net_stats is not None:
+					stats_logs.append(net_stats)
+				if g_theta is not None:
+					theta_logs.append([np.mean(g_theta, axis=(0,1)), np.std(g_theta, axis=(0,1))])
+				if g_theta_stn is not None:
+					theta_stn_logs.append([np.mean(g_theta_stn, axis=(0,1)), np.std(g_theta_stn, axis=(0,1))])
+				if g_theta_init is not None:
+					theta_init_logs.append([np.mean(g_theta_init, axis=0), np.std(g_theta_init, axis=0)])
+				if precision_t is not None:
+					prec_logs.append(precision_t)
+				if recall_t is not None:
+					recall_logs.append(recall_t)
+				if logits_mean is not None:
+					logits_logs.append([logits_mean, logits_std])
+				if logits_r_mean is not None:
+					logits_r_logs.append([logits_r_mean, logits_r_std])
 
 				### norm logs
 				grad_norms, d_r_loss_mean_sep, g_loss_mean_sep = condet.step(batch_im, batch_co, disc_only=True)
@@ -1181,27 +1235,28 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 				#plt.close(fig)
 
 				### plot condet evaluation plot every epoch **g_num**
-				if len(eval_logs) > 1:
-					eval_logs_mat = np.array(eval_logs)
-					eval_t_logs_mat = np.array(eval_t_logs)
-					stats_logs_mat = np.array(stats_logs)
-					norms_logs_mat = np.array(norms_logs)
-					att_grad_mean_mat = np.array(att_grad_mean_logs)
-					g_loss_mean_mat = np.array(g_loss_mean_logs)
-					theta_mat = np.array(theta_logs)
-					theta_stn_mat = np.array(theta_stn_logs)
-					theta_init_mat = np.array(theta_init_logs)
-					prec_mat = np.array(prec_logs)
-					recall_mat = np.array(recall_logs)
-					logits_mat = np.array(logits_logs)
-					logits_r_mat = np.array(logits_r_logs)
+				eval_logs_mat = np.array(eval_logs)
+				eval_t_logs_mat = np.array(eval_t_logs)
+				stats_logs_mat = np.array(stats_logs)
+				norms_logs_mat = np.array(norms_logs)
+				att_grad_mean_mat = np.array(att_grad_mean_logs)
+				g_loss_mean_mat = np.array(g_loss_mean_logs)
+				theta_mat = np.array(theta_logs)
+				theta_stn_mat = np.array(theta_stn_logs)
+				theta_init_mat = np.array(theta_init_logs)
+				prec_mat = np.array(prec_logs)
+				recall_mat = np.array(recall_logs)
+				logits_mat = np.array(logits_logs)
+				logits_r_mat = np.array(logits_r_logs)
 
+				if len(stats_logs) > 1:
 					#eval_logs_names = ['fid_dist', 'fid_dist']
 					stats_logs_names = ['nan_vars_ratio', 'inf_vars_ratio', 'tiny_vars_ratio', 
 										'big_vars_ratio']
 					#plot_time_mat(eval_logs_mat, eval_logs_names, 1, log_path, itrs=itrs_logs)
 					plot_time_mat(stats_logs_mat, stats_logs_names, 1, log_path, itrs=itrs_logs)
-					
+				
+				if len(eval_logs) > 1:	
 					### plot IOU
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1217,7 +1272,11 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					ax.legend(loc=0)
 					fig.savefig(log_path+'/mean_iou_train.png', dpi=300)
 					plt.close(fig)
+					### save eval_logs
+					with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
+						pk.dump([itrs_logs, eval_logs_mat], fs)
 
+				if len(eval_t_logs) > 1:
 					### plot IOU test
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1233,7 +1292,11 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					ax.legend(loc=0)
 					fig.savefig(log_path+'/mean_iou_test.png', dpi=300)
 					plt.close(fig)
+					### save eval_t_logs
+					with open(log_path+'/iou_test_logs.cpk', 'wb+') as fs:
+						pk.dump([itrs_logs, eval_t_logs_mat], fs)
 
+				if len(prec_logs) > 1 and len(recall_logs) > 1:
 					### plot precision and recall
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1249,6 +1312,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					fig.savefig(log_path+'/prec_recall_test.png', dpi=300)
 					plt.close(fig)
 
+				if len(ap_logs) > 1:
 					### plot average precision
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1262,7 +1326,11 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					ax.legend(loc=0)
 					fig.savefig(log_path+'/average_prec.png', dpi=300)
 					plt.close(fig)
+					### save average precision logs
+					with open(log_path+'/ap_logs.cpk', 'wb+') as fs:
+						pk.dump([itrs_logs, ap_logs], fs)
 
+				if len(logits_logs) > 1:
 					### plot logits
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1277,6 +1345,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					fig.savefig(log_path+'/top_logits.png', dpi=300)
 					plt.close(fig)
 
+				if len(logits_r_logs) > 1:
 					### plot logits on content images
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1291,6 +1360,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					fig.savefig(log_path+'/content_logits.png', dpi=300)
 					plt.close(fig)
 
+				if len(norms_logs) > 1:
 					### plot norms
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1306,6 +1376,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					fig.savefig(log_path+'/norm_grads.png', dpi=300)
 					plt.close(fig)
 
+				if len(theta_logs) > 1:
 					### plot theta
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1316,14 +1387,15 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 							c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
 						ax.plot(itrs_logs, theta_mat[:, 0, g] - theta_mat[:, 1, g], 
 							c=global_color_set_tab[g], linestyle='--', linewidth=0.5)
-					
-					for gt in range(4):
-						ax.plot(itrs_logs, [test_theta[gt][0] for _ in itrs_logs], label='test_%d' % gt, 
-							c=global_color_set_tab[g+gt+1])
-						ax.plot(itrs_logs, [test_theta[gt][0] + test_theta[gt][1] for _ in itrs_logs], 
-							c=global_color_set_tab[g+gt+1], linestyle='--', linewidth=0.5)
-						ax.plot(itrs_logs, [test_theta[gt][0] - test_theta[gt][1] for _ in itrs_logs], 
-							c=global_color_set_tab[g+gt+1], linestyle='--', linewidth=0.5)
+				
+					if test_bbox is not None:
+						for gt in range(4):
+							ax.plot(itrs_logs, [test_theta[gt][0] for _ in itrs_logs], label='test_%d' % gt, 
+								c=global_color_set_tab[g+gt+1])
+							ax.plot(itrs_logs, [test_theta[gt][0] + test_theta[gt][1] for _ in itrs_logs], 
+								c=global_color_set_tab[g+gt+1], linestyle='--', linewidth=0.5)
+							ax.plot(itrs_logs, [test_theta[gt][0] - test_theta[gt][1] for _ in itrs_logs], 
+								c=global_color_set_tab[g+gt+1], linestyle='--', linewidth=0.5)
 					
 					ax.grid(True, which='both', linestyle='dotted')
 					ax.set_title('Theta')
@@ -1333,6 +1405,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					fig.savefig(log_path+'/theta_log.png', dpi=300)
 					plt.close(fig)
 
+				if len(theta_stn_logs) > 1:
 					### plot theta_stn
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1348,6 +1421,7 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					fig.savefig(log_path+'/theta_stn_log.png', dpi=300)
 					plt.close(fig)
 
+				if len(theta_init_logs) > 1:
 					### plot theta_init
 					fig, ax = plt.subplots(figsize=(8, 6))
 					ax.clear()
@@ -1362,16 +1436,6 @@ def train_condet(condet, im_data, co_data, im_bbox, test_im, test_bbox, labels=N
 					ax.legend(loc=0)
 					fig.savefig(log_path+'/theta_init_log.png', dpi=300)
 					plt.close(fig)
-
-					### save eval_logs
-					with open(log_path+'/iou_logs.cpk', 'wb+') as fs:
-						pk.dump([itrs_logs, eval_logs_mat], fs)
-					### save eval_t_logs
-					with open(log_path+'/iou_test_logs.cpk', 'wb+') as fs:
-						pk.dump([itrs_logs, eval_t_logs_mat], fs)
-					### save average precision logs
-					with open(log_path+'/ap_logs.cpk', 'wb+') as fs:
-						pk.dump([itrs_logs, ap_logs], fs)
 
 			### discriminator update
 			if d_update_flag is True and d_updates > 0:
@@ -1579,12 +1643,11 @@ Returns intersection over union mean and std, net_stats, and draw_im_att
 def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000, const_update=False, calc_map=False):
 	### sample and batch size
 	batch_size = 64
-	draw_size = 20
+	draw_size = 50
 	co_data = None
 	
 	### collect real and gen samples
 	r_samples = im_data[0:sample_size, ...]
-	r_bboxes = bboxes[0:sample_size]
 	g_bbox, g_att, g_logits, order_list, g_theta, g_theta_stn, g_theta_init = \
 		apply_multi_stn(condet, r_samples)
 	
@@ -1609,13 +1672,14 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 		prune_multi_stn(condet, g_bbox, g_att, g_logits, order_list, conf_th=None)
 
 	### compute and draw mAP
-	if calc_map:
+	if calc_map and bboxes is not None:
 		draw_dir = '/'.join(draw_path.split('/')[:-1])
-		calc_mean_ap(r_bboxes, g_bbox, g_logits, draw_dir)
+		calc_mean_ap(bboxes[0:sample_size], g_bbox, g_logits, draw_dir)
 
 	### draw block image of gen samples
 	if draw_path is not None:
-		draw_multi_stn(r_samples[:draw_size], r_bboxes[:draw_size], 
+		r_draw_bboxes = bboxes[:draw_size] if bboxes is not None else None
+		draw_multi_stn(r_samples[:draw_size], r_draw_bboxes, 
 			g_bbox[:draw_size], g_att[:draw_size], order_list[:draw_size], draw_path+'_im.png',
 			stn_logits=g_logits[:draw_size], conf_th=conf_th)
 		### save logits
@@ -1635,8 +1699,11 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 	net_stats = condet.step(None, stats_only=True)
 
 	### compute iou, precesion and recall
-	iou_mean, iou_std, precision, recall = \
-		eval_multi_bbox(r_bboxes, g_bbox, g_logits, conf_th=conf_th)
+	if bboxes is not None:
+		iou_mean, iou_std, precision, recall = \
+			eval_multi_bbox(bboxes[0:sample_size], g_bbox, g_logits, conf_th=conf_th)
+	else:
+		iou_mean, iou_std, precision, recall = (None for _ in range(4))
 	#g_att_stn = bbox_to_att(g_stn_bbox, r_samples.shape)
 	#iou_mean, iou_std = eval_iou(g_att_stn, r_bboxes)
 
@@ -1651,6 +1718,10 @@ def calc_mean_ap(r_boxes, g_boxes, g_scores, path):
 	main_mean_ap(r_bboxes_dict, g_bboxes_dict, path)
 
 def eval_mean_ap(condet, im_data, bboxes, sample_size=1000):
+	### preconditions
+	if bboxes is None:
+		return 0.
+
 	### sample and batch size
 	batch_size = 64
 	
@@ -1739,28 +1810,28 @@ if __name__ == '__main__':
 	#test_bbox = mnist_test_bbox
 
 	### cub data
-	co_num = 10
-	test_num = 5
-	train_num = 50
-	cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
-	cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
-	with open(cub_order_path, 'rb') as fs:
-		cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
-	#cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
-	cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
-	print '>>> CUB CO SIZE:', cub_co_data[0].shape
-	print '>>> CUB TEST SIZE:', cub_test_data[0].shape
-	print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
-	with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
-		pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
-	
-	### dataset choice
-	train_im = cub_train_data[0]
-	train_bbox = cub_train_data[1]
-	train_co = cub_co_data[0]
-	
-	test_im = cub_test_data[0]
-	test_bbox = cub_test_data[1]
+	#co_num = 10
+	#test_num = 5
+	#train_num = 50
+	#cub_path = '/media/evl/Public/Mahyar/Data/cub/CUB_200_2011'
+	#cub_order_path = '/media/evl/Public/Mahyar/Data/cub/cub_split_10_5_50_{}.cpk'.format(run_seed)
+	#with open(cub_order_path, 'rb') as fs:
+	#	cub_co_order, cub_test_order, cub_train_order = pk.load(fs)
+	##cub_co_order, cub_test_order, cub_train_order = prep_cub(cub_path, co_num, test_num, train_num)
+	#cub_co_data, cub_test_data, cub_train_data = read_cub(cub_path, cub_co_order, cub_test_order, cub_train_order)
+	#print '>>> CUB CO SIZE:', cub_co_data[0].shape
+	#print '>>> CUB TEST SIZE:', cub_test_data[0].shape
+	#print '>>> CUB TRAIN SIZE:', cub_train_data[0].shape
+	#with open(log_path+'/cub_split_{}_{}_{}_{}.cpk'.format(co_num, test_num, train_num, run_seed), 'wb+') as fs:
+	#	pk.dump([cub_co_order, cub_test_order, cub_train_order], fs)
+	#
+	#### dataset choice
+	#train_im = cub_train_data[0]
+	#train_bbox = cub_train_data[1]
+	#train_co = cub_co_data[0]
+	#
+	#test_im = cub_test_data[0]
+	#test_bbox = cub_test_data[1]
 
 	### voc data
 	#co_num = [50 if i == 2 else 0 for i in range(20)]
@@ -1785,6 +1856,41 @@ if __name__ == '__main__':
 	#
 	#test_im = voc_test_data[0]
 	#test_bbox = voc_test_data[1]
+
+	### artrendex data
+	art_co_dir = '/media/evl/Public/Mahyar/Data/artrendex/Miami2017/'
+	art_im_dir = '/media/evl/Public/Mahyar/Data/artrendex/images_tag/'
+	art_co_fnames = None
+	art_test_fnames = None
+	art_train_fnames = None
+	with open('/media/evl/Public/Mahyar/Data/artrendex/co_fnames_orig.txt', 'r') as fs:
+		art_co_fnames = [l.strip() for l in fs]
+	#with open('/media/evl/Public/Mahyar/Data/artrendex/test_fnames.txt', 'r') as fs:
+	#	art_test_fnames = [l.strip() for l in fs]
+	#with open('/media/evl/Public/Mahyar/Data/artrendex/train_fnames.txt', 'r') as fs:
+	#	art_train_fnames = [l.strip() for l in fs]
+	art_co_data, art_test_data, art_train_data, art_co_fnames, art_test_fnames, art_train_fnames = \
+		read_art(art_co_dir, art_im_dir, co_fnames=art_co_fnames, val_fnames=art_test_fnames, train_fnames=art_train_fnames)
+	print '>>> ART CO SIZE:', art_co_data.shape
+	print '>>> ART TEST SIZE:', art_test_data.shape
+	print '>>> ART TRAIN SIZE:', art_train_data.shape
+	with open(log_path+'/co_fnames.txt', 'w+') as fs:
+		for l in art_co_fnames:
+			print >> fs, l
+	with open(log_path+'/test_fnames.txt', 'w+') as fs:
+		for l in art_test_fnames:
+			print >> fs, l
+	with open(log_path+'/train_fnames.txt', 'w+') as fs:
+		for l in art_train_fnames:
+			print >> fs, l
+	
+	### dataset choice
+	train_im = art_train_data
+	train_bbox = None
+	train_co = art_co_data
+	
+	test_im = art_test_data
+	test_bbox = None
 
 	'''
 	TENSORFLOW SETUP
@@ -1831,8 +1937,8 @@ if __name__ == '__main__':
 
 	### load condet **eval
 	#condet_path = '/media/evl/Public/Mahyar/condet_logs/41_logs_attstnmulti10_avgatt_cub_10shot_b9bb999_allbbox/run_{}/snapshots/model_83333_500000.h5'
-	condet_path = log_path_snap + '/model_best.h5'
-	condet.load(condet_path.format(run_seed))
+	#condet_path = log_path_snap + '/model_best.h5'
+	#condet.load(condet_path.format(run_seed))
 
 	'''
 	GAN DATA EVAL
@@ -1844,8 +1950,8 @@ if __name__ == '__main__':
 	print ">>> IOU std: ", iou_std
 	print ">>> Precision: ", precision
 	print ">>> Recall: ", recall
-	with open(log_path+'/iou_test_log.txt', 'w+') as fs:
-		print >>fs, '>>> iou_mean: %f, iou_std: %f, precision: %f, recall: %f' \
-			% (iou_mean, iou_std, precision, recall)
+	if iou_mean is not None:
+		with open(log_path+'/iou_test_log.txt', 'w+') as fs:
+			print >>fs, '>>> iou_mean: %f, iou_std: %f, precision: %f, recall: %f' \
+				% (iou_mean, iou_std, precision, recall)
 	sess.close()
-
