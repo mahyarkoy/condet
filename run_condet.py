@@ -1643,7 +1643,7 @@ Returns intersection over union mean and std, net_stats, and draw_im_att
 def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_size=1000, const_update=False, calc_map=False):
 	### sample and batch size
 	batch_size = 64
-	draw_size = 50
+	draw_size = 20
 	co_data = None
 	
 	### collect real and gen samples
@@ -1676,16 +1676,23 @@ def eval_condet(condet, im_data, bboxes, draw_path=None, co_data=None, sample_si
 		draw_dir = '/'.join(draw_path.split('/')[:-1])
 		calc_mean_ap(bboxes[0:sample_size], g_bbox, g_logits, draw_dir)
 
-	### draw block image of gen samples
+	### draw block image of gen samples (top logits are chosen)
 	if draw_path is not None:
-		r_draw_bboxes = bboxes[:draw_size] if bboxes is not None else None
-		draw_multi_stn(r_samples[:draw_size], r_draw_bboxes, 
-			g_bbox[:draw_size], g_att[:draw_size], order_list[:draw_size], draw_path+'_im.png',
-			stn_logits=g_logits[:draw_size], conf_th=conf_th)
+		draw_order = np.argsort(top_logits)[:-draw_size-1:-1]
+		#draw_order = np.arange(draw_size)
+		draw_r_samples = r_samples[draw_order, ...]
+		draw_r_bboxes = [bboxes[di] for di in draw_order] if bboxes is not None else None
+		draw_g_bbox = [g_bbox[di] for di in draw_order]
+		draw_g_att = [g_att[di] for di in draw_order]
+		draw_order_list = [order_list[di] for di in draw_order]
+		draw_g_logits = [g_logits[di] for di in draw_order]
+		draw_multi_stn(draw_r_samples, draw_r_bboxes, 
+			draw_g_bbox, draw_g_att, draw_order_list, draw_path+'_im.png',
+			stn_logits=draw_g_logits, conf_th=None)
 		### save logits
 		str_round = lambda x: str(round(x, 3))
 		with open(draw_path+'_logits.txt', 'w+') as fs:
-			for l in g_logits[0:draw_size]:
+			for l in draw_g_logits:
 				print >>fs, '\t'.join(map(str_round, l))
 
 		#if co_data is not None:
@@ -1933,12 +1940,12 @@ if __name__ == '__main__':
 	GAN SETUP SECTION
 	'''
 	### train condet
-	train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
+	#train_condet(condet, train_im, train_co, train_bbox, test_im, test_bbox)
 
 	### load condet **eval
-	#condet_path = '/media/evl/Public/Mahyar/condet_logs/41_logs_attstnmulti10_avgatt_cub_10shot_b9bb999_allbbox/run_{}/snapshots/model_83333_500000.h5'
+	condet_path = '/media/evl/Public/Mahyar/condet_logs/logs_condet_attstn10_art_10k/run_{}/snapshots/model_83333_500000.h5'
 	#condet_path = log_path_snap + '/model_best.h5'
-	#condet.load(condet_path.format(run_seed))
+	condet.load(condet_path.format(run_seed))
 
 	'''
 	GAN DATA EVAL
